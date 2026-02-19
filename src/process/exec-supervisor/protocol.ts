@@ -39,4 +39,16 @@ export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10;
 export const EVENT_TOPIC_PREFIX = "exec:";
 
 /** Protocol version */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
+
+/** v2: Default event batch interval in ms */
+export const DEFAULT_EVENT_BATCH_INTERVAL_MS = 200;
+
+/** v2: Default high water mark for event publishing */
+export const DEFAULT_EVENT_HWM = 1000;
+
+/** v2: Default journal file path */
+export const DEFAULT_JOURNAL_PATH = "/tmp/exec-supervisor-journal.json";
+
+/** v2: Default journal flush interval in ms */
+export const DEFAULT_JOURNAL_FLUSH_INTERVAL_MS = 5000;

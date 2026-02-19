@@ -52,6 +52,17 @@ The exec tool supports two execution modes:
 - **origin** (default): In-process execution using the Gateway's ProcessSupervisor. Simple and reliable for typical workloads.
 - **zmq**: Out-of-process execution via ZeroMQ supervisor. Recommended for high-concurrency scenarios (6+ parallel exec commands with frequent polling) where main event loop saturation could occur.
 
+### ZMQ Supervisor v2 Features
+
+The ZMQ supervisor (protocol v2) includes enhanced features:
+
+- **Push mode**: Real-time event delivery via PUB/SUB socket with local buffering
+- **Gap detection**: Automatic detection and backfill of missing events
+- **Job journal**: Active job state persisted for recovery after supervisor restart
+- **High water mark**: Backpressure control to prevent memory exhaustion
+
+See [Exec Supervisor](/exec-supervisor) for full details.
+
 ### Configuring execution mode
 
 In `openclaw.yaml`:

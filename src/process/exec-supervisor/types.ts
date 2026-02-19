@@ -55,12 +55,27 @@ export type HealthRequest = {
   type: "health";
 };
 
+/** v2: Subscribe request - client subscribes to job events */
+export type SubscribeRequest = {
+  type: "subscribe";
+  jobId: string;
+  /** Sequence number to start from (for backfill after reconnect) */
+  fromSeq?: number;
+};
+
+/** v2: List active jobs (for recovery after reconnect) */
+export type ListJobsRequest = {
+  type: "list-jobs";
+};
+
 export type ControlRequest =
   | SpawnRequest
   | PollRequest
   | KillRequest
   | StatusRequest
-  | HealthRequest;
+  | HealthRequest
+  | SubscribeRequest
+  | ListJobsRequest;
 
 // Response types
 
@@ -125,6 +140,32 @@ export type HealthResponse = {
   activeJobs: number;
   totalJobsProcessed: number;
   memoryUsageMB: number;
+  /** v2: Number of events dropped due to HWM */
+  eventsDropped?: number;
+};
+
+/** v2: Subscribe response */
+export type SubscribeResponse = {
+  type: "subscribe";
+  success: boolean;
+  jobId: string;
+  /** Current sequence number for the job */
+  currentSeq?: number;
+  /** Events since fromSeq (for backfill) */
+  events?: JobEvent[];
+  error?: string;
+};
+
+/** v2: List jobs response */
+export type ListJobsResponse = {
+  type: "list-jobs";
+  success: boolean;
+  jobs: Array<{
+    jobId: string;
+    state: JobState;
+    lastSeq: number;
+    startedAtMs: number;
+  }>;
 };
 
 export type ControlResponse =
@@ -132,7 +173,9 @@ export type ControlResponse =
   | PollResponse
   | KillResponse
   | StatusResponse
-  | HealthResponse;
+  | HealthResponse
+  | SubscribeResponse
+  | ListJobsResponse;
 
 // =============================================================================
 // Event Plane (PUB/SUB)
@@ -182,12 +225,27 @@ export type JobFailedEvent = {
   reason: TerminationReason;
 };
 
+/** v2: Gap marker event - indicates events were dropped due to HWM */
+export type JobGapEvent = {
+  kind: "job.gap";
+  jobId: string;
+  seq: number;
+  ts: number;
+  /** Number of events that were dropped */
+  droppedCount: number;
+  /** First dropped sequence number */
+  fromSeq: number;
+  /** Last dropped sequence number */
+  toSeq: number;
+};
+
 export type JobEvent =
   | JobStartedEvent
   | JobStdoutEvent
   | JobStderrEvent
   | JobExitedEvent
-  | JobFailedEvent;
+  | JobFailedEvent
+  | JobGapEvent;
 
 // =============================================================================
 // Ring Buffer Entry
@@ -241,11 +299,45 @@ export type ExecSupervisorConfig = {
   cleanupIntervalMs?: number;
   /** How long to keep finished jobs before cleanup in ms (default: 300000 = 5 min) */
   finishedJobRetentionMs?: number;
+  /** v2: High water mark for event publishing (default: 1000) */
+  eventHwm?: number;
+  /** v2: Path to journal file (default: /tmp/exec-supervisor-journal.json) */
+  journalPath?: string;
+  /** v2: Journal flush interval in ms (default: 5000) */
+  journalFlushIntervalMs?: number;
+};
+
+// =============================================================================
+// v2: Journal Types
+// =============================================================================
+
+/** Journal entry for a job */
+export type JournalEntry = {
+  jobId: string;
+  command: string;
+  cwd?: string;
+  startedAtMs: number;
+  state: JobState;
+  lastSeq: number;
+  pid?: number;
+  exitCode?: number | null;
+  exitSignal?: NodeJS.Signals | number | null;
+  terminationReason?: TerminationReason;
+};
+
+/** Journal file structure */
+export type JournalFile = {
+  version: number;
+  updatedAtMs: number;
+  jobs: JournalEntry[];
 };
 
 // =============================================================================
 // Client Config
 // =============================================================================
+
+/** v2: Subscribe mode for receiving events */
+export type SubscribeMode = "poll" | "push";
 
 export type ExecSupervisorClientConfig = {
   /** Control plane REQ socket address (default: tcp://127.0.0.1:18790) */
@@ -258,4 +350,8 @@ export type ExecSupervisorClientConfig = {
   reconnectIntervalMs?: number;
   /** Max reconnect attempts (default: 10) */
   maxReconnectAttempts?: number;
+  /** v2: Subscribe mode (default: poll) */
+  subscribeMode?: SubscribeMode;
+  /** v2: Enable gap detection and auto-backfill (default: true in push mode) */
+  autoBackfill?: boolean;
 };

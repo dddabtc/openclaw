@@ -11,13 +11,18 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import * as zmq from "zeromq";
 import {
   DEFAULT_CHUNK_MERGE_INTERVAL_MS,
   DEFAULT_CLEANUP_INTERVAL_MS,
   DEFAULT_CONTROL_ADDRESS,
   DEFAULT_EVENT_ADDRESS,
+  DEFAULT_EVENT_HWM,
   DEFAULT_FINISHED_JOB_RETENTION_MS,
+  DEFAULT_JOURNAL_FLUSH_INTERVAL_MS,
+  DEFAULT_JOURNAL_PATH,
   DEFAULT_MAX_CONCURRENT_JOBS,
   DEFAULT_RING_BUFFER_MAX_BYTES,
   DEFAULT_TIMEOUT_MS,
@@ -33,12 +38,16 @@ import type {
   JobRecord,
   JobState,
   JobStatus,
+  JournalEntry,
+  JournalFile,
   KillResponse,
+  ListJobsResponse,
   OutputChunk,
   PollResponse,
   RingBufferEntry,
   SpawnResponse,
   StatusResponse,
+  SubscribeResponse,
   TerminationReason,
 } from "./types.js";
 
@@ -51,6 +60,14 @@ const processes = new Map<string, ChildProcess>();
 const pendingChunks = new Map<string, { stdout: string; stderr: string; lastFlush: number }>();
 let startedAtMs = Date.now();
 let totalJobsProcessed = 0;
+
+// v2: Event tracking
+let eventsDropped = 0;
+let _eventQueueSize = 0; // Reserved for future HWM tracking
+
+// v2: Journal state
+let journalDirty = false;
+let journalPath = DEFAULT_JOURNAL_PATH;
 
 // =============================================================================
 // Sockets
@@ -72,6 +89,9 @@ let config: Required<ExecSupervisorConfig> = {
   defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
   cleanupIntervalMs: DEFAULT_CLEANUP_INTERVAL_MS,
   finishedJobRetentionMs: DEFAULT_FINISHED_JOB_RETENTION_MS,
+  eventHwm: DEFAULT_EVENT_HWM,
+  journalPath: DEFAULT_JOURNAL_PATH,
+  journalFlushIntervalMs: DEFAULT_JOURNAL_FLUSH_INTERVAL_MS,
 };
 
 // =============================================================================
@@ -81,6 +101,94 @@ let config: Required<ExecSupervisorConfig> = {
 function log(level: "info" | "warn" | "error", msg: string) {
   const ts = new Date().toISOString();
   console.log(`[${ts}] [exec-supervisor] [${level}] ${msg}`);
+}
+
+// =============================================================================
+// v2: Journal Management
+// =============================================================================
+
+function getJournalEntry(job: JobRecord): JournalEntry {
+  return {
+    jobId: job.jobId,
+    command: job.command,
+    cwd: job.cwd,
+    startedAtMs: job.startedAtMs,
+    state: job.state,
+    lastSeq: job.nextSeq - 1,
+    pid: job.pid,
+    exitCode: job.exitCode,
+    exitSignal: job.exitSignal,
+    terminationReason: job.terminationReason,
+  };
+}
+
+function saveJournal(): void {
+  if (!journalDirty) {
+    return;
+  }
+
+  try {
+    // Only save active jobs (pending/running)
+    const activeJobs: JournalEntry[] = [];
+    for (const job of jobs.values()) {
+      if (job.state === "pending" || job.state === "running" || job.state === "exiting") {
+        activeJobs.push(getJournalEntry(job));
+      }
+    }
+
+    const journalData: JournalFile = {
+      version: PROTOCOL_VERSION,
+      updatedAtMs: Date.now(),
+      jobs: activeJobs,
+    };
+
+    const journalDir = path.dirname(journalPath);
+    if (!fs.existsSync(journalDir)) {
+      fs.mkdirSync(journalDir, { recursive: true });
+    }
+
+    // Write atomically using temp file
+    const tempPath = journalPath + ".tmp";
+    fs.writeFileSync(tempPath, JSON.stringify(journalData, null, 2));
+    fs.renameSync(tempPath, journalPath);
+
+    journalDirty = false;
+    log("info", `Journal saved: ${activeJobs.length} active jobs`);
+  } catch (err) {
+    log("error", `Failed to save journal: ${String(err)}`);
+  }
+}
+
+function loadJournal(): JournalEntry[] {
+  try {
+    if (!fs.existsSync(journalPath)) {
+      return [];
+    }
+
+    const data = fs.readFileSync(journalPath, "utf-8");
+    const journal = JSON.parse(data) as JournalFile;
+
+    // Validate version
+    if (journal.version > PROTOCOL_VERSION) {
+      log("warn", `Journal version ${journal.version} is newer than protocol ${PROTOCOL_VERSION}`);
+    }
+
+    // Filter to only return jobs that might still be running
+    // (can't know for sure since we don't have the processes)
+    const activeJobs = journal.jobs.filter(
+      (j) => j.state === "pending" || j.state === "running" || j.state === "exiting",
+    );
+
+    log("info", `Journal loaded: ${activeJobs.length} active job entries`);
+    return activeJobs;
+  } catch (err) {
+    log("warn", `Failed to load journal: ${String(err)}`);
+    return [];
+  }
+}
+
+function markJournalDirty(): void {
+  journalDirty = true;
 }
 
 // =============================================================================
@@ -249,6 +357,9 @@ function finalizeJob(
 
   processes.delete(jobId);
 
+  // v2: Mark journal dirty (job completed, will be removed from journal)
+  markJournalDirty();
+
   if (state === "failed") {
     void publishEvent({
       kind: "job.failed",
@@ -334,6 +445,9 @@ async function handleSpawn(req: ControlRequest & { type: "spawn" }): Promise<Spa
     });
 
     totalJobsProcessed++;
+
+    // v2: Mark journal dirty
+    markJournalDirty();
 
     // Set up output handlers
     child.stdout?.on("data", (data: Buffer) => {
@@ -520,6 +634,112 @@ function handleHealth(): HealthResponse {
     activeJobs: getActiveJobCount(),
     totalJobsProcessed,
     memoryUsageMB: Math.round(memUsage.heapUsed / 1024 / 1024),
+    eventsDropped,
+  };
+}
+
+// v2: Subscribe handler - returns events from a given sequence for backfill
+function handleSubscribe(req: ControlRequest & { type: "subscribe" }): SubscribeResponse {
+  const { jobId, fromSeq } = req;
+  const job = jobs.get(jobId);
+
+  if (!job) {
+    return {
+      type: "subscribe",
+      success: false,
+      jobId,
+      error: "Job not found",
+    };
+  }
+
+  const startSeq = fromSeq ?? 0;
+  const events: JobEvent[] = [];
+
+  // Build events from ring buffer entries
+  for (const entry of job.ringBuffer) {
+    if (entry.seq >= startSeq) {
+      switch (entry.kind) {
+        case "stdout":
+          events.push({
+            kind: "job.stdout",
+            jobId,
+            seq: entry.seq,
+            ts: entry.ts,
+            data: entry.data,
+          });
+          break;
+        case "stderr":
+          events.push({
+            kind: "job.stderr",
+            jobId,
+            seq: entry.seq,
+            ts: entry.ts,
+            data: entry.data,
+          });
+          break;
+        case "started":
+          events.push({
+            kind: "job.started",
+            jobId,
+            seq: entry.seq,
+            ts: entry.ts,
+            pid: job.pid,
+            command: job.command,
+          });
+          break;
+        case "exited":
+          events.push({
+            kind: "job.exited",
+            jobId,
+            seq: entry.seq,
+            ts: entry.ts,
+            exitCode: job.exitCode ?? null,
+            exitSignal: job.exitSignal ?? null,
+            reason: job.terminationReason ?? "exit",
+          });
+          break;
+        case "failed":
+          events.push({
+            kind: "job.failed",
+            jobId,
+            seq: entry.seq,
+            ts: entry.ts,
+            error: job.terminationReason ?? "unknown",
+            reason: job.terminationReason ?? "spawn-error",
+          });
+          break;
+      }
+    }
+  }
+
+  return {
+    type: "subscribe",
+    success: true,
+    jobId,
+    currentSeq: job.nextSeq - 1,
+    events,
+  };
+}
+
+// v2: List jobs handler - returns all active jobs for recovery
+function handleListJobs(): ListJobsResponse {
+  const jobList: ListJobsResponse["jobs"] = [];
+
+  for (const job of jobs.values()) {
+    if (job.state === "pending" || job.state === "running" || job.state === "exiting") {
+      jobList.push({
+        jobId: job.jobId,
+        state: job.state,
+        lastSeq: job.nextSeq - 1,
+        startedAtMs: job.startedAtMs,
+      });
+    }
+  }
+
+  return {
+    type: "list-jobs",
+    success: true,
+    jobs: jobList,
   };
 }
 
@@ -535,6 +755,10 @@ async function handleRequest(req: ControlRequest): Promise<ControlResponse> {
       return handleStatus(req);
     case "health":
       return handleHealth();
+    case "subscribe":
+      return handleSubscribe(req);
+    case "list-jobs":
+      return handleListJobs();
     default:
       return {
         type: "health",
@@ -622,6 +846,38 @@ export async function startSupervisor(userConfig?: ExecSupervisorConfig): Promis
 
   startedAtMs = Date.now();
 
+  // v2: Initialize journal path
+  journalPath = config.journalPath;
+
+  // v2: Load journal for recovery
+  const journalEntries = loadJournal();
+  for (const entry of journalEntries) {
+    // Create placeholder job records for recovered jobs
+    // These are "orphaned" since we don't have the processes
+    // They'll be marked as failed on first poll
+    const job: JobRecord = {
+      jobId: entry.jobId,
+      command: entry.command,
+      cwd: entry.cwd,
+      pid: entry.pid,
+      state: "failed", // Mark as failed since we can't recover the process
+      startedAtMs: entry.startedAtMs,
+      lastActivityAtMs: Date.now(),
+      exitCode: null,
+      exitSignal: null,
+      terminationReason: "spawn-error", // Supervisor restart
+      ringBuffer: [],
+      ringBufferBytes: 0,
+      nextSeq: entry.lastSeq + 1,
+    };
+    jobs.set(entry.jobId, job);
+    log("info", `Recovered job ${entry.jobId} from journal (marked as failed)`);
+  }
+
+  // v2: Reset counters
+  eventsDropped = 0;
+  _eventQueueSize = 0;
+
   // Create sockets
   controlSocket = new zmq.Reply();
   eventSocket = new zmq.Publisher();
@@ -634,6 +890,8 @@ export async function startSupervisor(userConfig?: ExecSupervisorConfig): Promis
   log("info", `Events: ${config.eventAddress}`);
   log("info", `Max concurrent jobs: ${config.maxConcurrentJobs}`);
   log("info", `Ring buffer max: ${config.ringBufferMaxBytes} bytes`);
+  log("info", `Event HWM: ${config.eventHwm}`);
+  log("info", `Journal path: ${journalPath}`);
 
   // Start cleanup interval
   const cleanupInterval = setInterval(cleanupFinishedJobs, config.cleanupIntervalMs);
@@ -648,6 +906,9 @@ export async function startSupervisor(userConfig?: ExecSupervisorConfig): Promis
     }
   }, config.chunkMergeIntervalMs);
 
+  // v2: Start journal flush interval
+  const journalInterval = setInterval(saveJournal, config.journalFlushIntervalMs);
+
   // Start control loop (non-blocking)
   void runControlLoop();
 
@@ -655,6 +916,10 @@ export async function startSupervisor(userConfig?: ExecSupervisorConfig): Promis
     stop: async () => {
       clearInterval(cleanupInterval);
       clearInterval(flushInterval);
+      clearInterval(journalInterval);
+
+      // v2: Final journal save
+      saveJournal();
 
       // Kill all running processes
       for (const proc of processes.values()) {
