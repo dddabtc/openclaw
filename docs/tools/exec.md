@@ -45,8 +45,42 @@ Notes:
   effective `workdir` boundary. If a script path resolves outside `workdir`, preflight is skipped for
   that file.
 
+## Execution Mode
+
+The exec tool supports two execution modes:
+
+- **origin** (default): In-process execution using the Gateway's ProcessSupervisor. Simple and reliable for typical workloads.
+- **zmq**: Out-of-process execution via ZeroMQ supervisor. Recommended for high-concurrency scenarios (6+ parallel exec commands with frequent polling) where main event loop saturation could occur.
+
+### Configuring execution mode
+
+In `openclaw.yaml`:
+
+```yaml
+tools:
+  exec:
+    mode: origin # or "zmq"
+```
+
+### Runtime mode switching
+
+Use `/exec-mode` to view or change the mode at runtime:
+
+```
+/exec-mode           # Show current mode and supervisor status
+/exec-mode origin    # Switch to in-process mode
+/exec-mode zmq       # Switch to ZMQ supervisor mode
+```
+
+Notes:
+
+- Switching only affects new exec tasks; running tasks continue in their original mode
+- Switching to `zmq` requires a healthy supervisor (health check is performed)
+- See [Exec Supervisor](/exec-supervisor) for architecture details and running the supervisor
+
 ## Config
 
+- `tools.exec.mode` (default: `origin`): execution mode (`origin` or `zmq`).
 - `tools.exec.notifyOnExit` (default: true): when true, backgrounded exec sessions enqueue a system event and request a heartbeat on exit.
 - `tools.exec.approvalRunningNoticeMs` (default: 10000): emit a single “running” notice when an approval-gated exec runs longer than this (0 disables).
 - `tools.exec.host` (default: `sandbox`)
