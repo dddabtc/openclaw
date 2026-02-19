@@ -178,6 +178,12 @@ export type GroupToolPolicyConfig = {
 export type GroupToolPolicyBySenderConfig = Record<string, GroupToolPolicyConfig>;
 
 export type ExecToolConfig = {
+  /**
+   * Exec implementation mode.
+   * - origin: In-process execution (default, current behavior)
+   * - zmq: Out-of-process execution via ZMQ supervisor
+   */
+  mode?: "origin" | "zmq";
   /** Exec host routing (default: sandbox). */
   host?: "sandbox" | "gateway" | "node";
   /** Exec security mode (default: deny). */

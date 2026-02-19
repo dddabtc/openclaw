@@ -572,6 +572,22 @@ function buildChatCommands(): ChatCommandDefinition[] {
       formatArgs: COMMAND_ARG_FORMATTERS.exec,
     }),
     defineChatCommand({
+      key: "exec-mode",
+      nativeName: "exec_mode",
+      description: "View or switch exec mode (origin or zmq supervisor).",
+      textAliases: ["/exec-mode", "/execmode"],
+      category: "management",
+      args: [
+        {
+          name: "mode",
+          description: "origin (in-process) or zmq (supervisor)",
+          type: "string",
+          choices: ["origin", "zmq"],
+        },
+      ],
+      argsMenu: "auto",
+    }),
+    defineChatCommand({
       key: "model",
       nativeName: "model",
       description: "Show or set the model.",
