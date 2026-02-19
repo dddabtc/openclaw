@@ -1,6 +1,12 @@
 import type { ExecAsk, ExecHost, ExecSecurity } from "../infra/exec-approvals.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
 
+export type ExecMainSessionPolicy = {
+  forbidLongExec?: boolean;
+  requireBackgroundForExec?: boolean;
+  maxExecTimeoutSec?: number;
+};
+
 export type ExecToolDefaults = {
   host?: ExecHost;
   security?: ExecSecurity;
@@ -21,6 +27,7 @@ export type ExecToolDefaults = {
   notifyOnExit?: boolean;
   notifyOnExitEmptySuccess?: boolean;
   cwd?: string;
+  mainSessionPolicy?: ExecMainSessionPolicy;
 };
 
 export type ExecElevatedDefaults = {

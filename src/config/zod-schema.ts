@@ -307,6 +307,19 @@ export const OpenClawSchema = z
     commands: CommandsSchema,
     approvals: ApprovalsSchema,
     session: SessionSchema,
+    sessionPolicies: z
+      .object({
+        main: z
+          .object({
+            forbidLongExec: z.boolean().optional(),
+            requireBackgroundForExec: z.boolean().optional(),
+            maxExecTimeoutSec: z.number().int().positive().optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
     cron: z
       .object({
         enabled: z.boolean().optional(),

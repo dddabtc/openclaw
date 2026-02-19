@@ -30,6 +30,7 @@ import {
 } from "./bash-tools.exec-runtime.js";
 import type {
   ExecElevatedDefaults,
+  ExecMainSessionPolicy,
   ExecToolDefaults,
   ExecToolDetails,
 } from "./bash-tools.exec-types.js";
@@ -47,6 +48,7 @@ import { assertSandboxPath } from "./sandbox-paths.js";
 export type { BashSandboxConfig } from "./bash-tools.shared.js";
 export type {
   ExecElevatedDefaults,
+  ExecMainSessionPolicy,
   ExecToolDefaults,
   ExecToolDetails,
 } from "./bash-tools.exec-types.js";
@@ -147,6 +149,20 @@ async function validateScriptFileForShellBleed(params: {
   }
 }
 
+
+function isMainAgentSession(sessionKey?: string) {
+  const parsed = parseAgentSessionKey(sessionKey);
+  return parsed?.rest === "main";
+}
+
+function resolveMainSessionMaxExecTimeoutSec(policy?: ExecMainSessionPolicy) {
+  const raw = policy?.maxExecTimeoutSec;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+    return 120;
+  }
+  return Math.floor(raw);
+}
+
 export function createExecTool(
   defaults?: ExecToolDefaults,
   // oxlint-disable-next-line typescript/no-explicit-any
@@ -199,6 +215,30 @@ export function createExecTool(
 
       if (!params.command) {
         throw new Error("Provide a command to start.");
+      }
+
+      const mainSessionPolicy = defaults?.mainSessionPolicy;
+      if (isMainAgentSession(defaults?.sessionKey) && mainSessionPolicy?.forbidLongExec) {
+        const maxExecTimeoutSec = resolveMainSessionMaxExecTimeoutSec(mainSessionPolicy);
+        const timeoutSec = typeof params.timeout === "number" ? params.timeout : undefined;
+        const backgroundRequestedByPolicy = params.background === true;
+        const yieldRequestedByPolicy = typeof params.yieldMs === "number";
+        const yieldExceedsLimit =
+          !yieldRequestedByPolicy || (params.yieldMs as number) > 120_000;
+        const timeoutMissingOrTooLarge =
+          timeoutSec === undefined || timeoutSec <= 0 || timeoutSec > maxExecTimeoutSec;
+        const longExecByTimeout = timeoutMissingOrTooLarge;
+        const longExecByForeground =
+          !backgroundRequestedByPolicy &&
+          (mainSessionPolicy.requireBackgroundForExec || yieldExceedsLimit);
+        if (longExecByTimeout || longExecByForeground) {
+          throw new Error(
+            [
+              `Main session policy blocked exec: this command is considered long-running (timeout must be <= ${maxExecTimeoutSec}s and long runs must use background mode).`,
+              "Use sessions_spawn for longer tasks, or rerun exec with background=true / an appropriate yieldMs and timeout.",
+            ].join("\n"),
+          );
+        }
       }
 
       const maxOutput = DEFAULT_MAX_OUTPUT;

@@ -97,6 +97,13 @@ export type OpenClawConfig = {
   talk?: TalkConfig;
   gateway?: GatewayConfig;
   memory?: MemoryConfig;
+  sessionPolicies?: {
+    main?: {
+      forbidLongExec?: boolean;
+      requireBackgroundForExec?: boolean;
+      maxExecTimeoutSec?: number;
+    };
+  };
 };
 
 export type ConfigValidationIssue = {
