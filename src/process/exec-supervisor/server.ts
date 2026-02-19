@@ -118,17 +118,29 @@ function appendToRingBuffer(
 // Event Publishing
 // =============================================================================
 
+// Queue for serializing event publishing (ZMQ sockets are not thread-safe)
+let eventPublishQueue: Promise<void> = Promise.resolve();
+
 async function publishEvent(event: JobEvent) {
   if (!eventSocket) {
     return;
   }
-  const topic = `${EVENT_TOPIC_PREFIX}${event.jobId}`;
-  const payload = JSON.stringify(event);
-  try {
-    await eventSocket.send([topic, payload]);
-  } catch (err) {
-    log("error", `Failed to publish event: ${String(err)}`);
-  }
+
+  // Serialize event publishing to avoid "Socket is busy writing" error
+  eventPublishQueue = eventPublishQueue.then(async () => {
+    if (!eventSocket) {
+      return;
+    }
+    const topic = `${EVENT_TOPIC_PREFIX}${event.jobId}`;
+    const payload = JSON.stringify(event);
+    try {
+      await eventSocket.send([topic, payload]);
+    } catch (err) {
+      log("error", `Failed to publish event: ${String(err)}`);
+    }
+  });
+
+  return eventPublishQueue;
 }
 
 // =============================================================================
