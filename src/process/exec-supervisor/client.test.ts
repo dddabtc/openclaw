@@ -6,8 +6,8 @@ describe("exec-supervisor client", () => {
   let stopServer: (() => Promise<void>) | null = null;
   let client: ExecSupervisorClient | null = null;
 
-  const testControlAddr = "tcp://127.0.0.1:19890";
-  const testEventAddr = "tcp://127.0.0.1:19891";
+  const testControlAddr = "tcp://127.0.0.1:19880";
+  const testEventAddr = "tcp://127.0.0.1:19881";
 
   beforeEach(async () => {
     const server = await startSupervisor({
