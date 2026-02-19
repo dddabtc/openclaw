@@ -52,6 +52,11 @@ Notes:
 - `tools.exec.node` (default: unset)
 - `tools.exec.pathPrepend`: list of directories to prepend to `PATH` for exec runs (gateway + sandbox only).
 - `tools.exec.safeBins`: stdin-only safe binaries that can run without explicit allowlist entries. For behavior details, see [Safe bins](/tools/exec-approvals#safe-bins-stdin-only).
+- `tools.exec.pathPrepend`: list of directories to prepend to `PATH` for exec runs.
+- `tools.exec.safeBins`: stdin-only safe binaries that can run without explicit allowlist entries.
+- `sessionPolicies.main.forbidLongExec` (default: `false`): hard block long `exec` calls from `agent:*:main` sessions.
+- `sessionPolicies.main.requireBackgroundForExec` (default: `false`): when enabled with `forbidLongExec`, main-session exec must use `background=true`.
+- `sessionPolicies.main.maxExecTimeoutSec` (default: `120`): max allowed `exec.timeout` for main-session guard.
 
 Example:
 
@@ -60,6 +65,13 @@ Example:
   tools: {
     exec: {
       pathPrepend: ["~/bin", "/opt/oss/bin"],
+    },
+  },
+  sessionPolicies: {
+    main: {
+      forbidLongExec: true,
+      requireBackgroundForExec: false,
+      maxExecTimeoutSec: 120,
     },
   },
 }

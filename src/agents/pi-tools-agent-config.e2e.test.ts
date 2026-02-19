@@ -677,4 +677,30 @@ describe("Agent-specific tool filtering", () => {
     const helperDetails = helperResult?.details as { status?: string } | undefined;
     expect(helperDetails?.status).toBe("completed");
   });
+
+  it("threads sessionPolicies.main into exec long-run guard", async () => {
+    const cfg: OpenClawConfig = {
+      sessionPolicies: {
+        main: {
+          forbidLongExec: true,
+          maxExecTimeoutSec: 120,
+        },
+      },
+    };
+
+    const tools = createOpenClawCodingTools({
+      config: cfg,
+      sessionKey: "agent:main:main",
+      workspaceDir: "/tmp/test-main-policy",
+      agentDir: "/tmp/agent-main-policy",
+    });
+    const execTool = tools.find((tool) => tool.name === "exec");
+    expect(execTool).toBeDefined();
+
+    await expect(
+      execTool?.execute("call-main-policy", {
+        command: "echo done",
+      }),
+    ).rejects.toThrow("Main session policy blocked exec");
+  });
 });

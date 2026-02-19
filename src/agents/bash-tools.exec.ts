@@ -63,6 +63,119 @@ import {
 import { callGatewayTool } from "./tools/gateway.js";
 import { listNodes, resolveNodeIdFromList } from "./tools/nodes-utils.js";
 
+// Security: Blocklist of environment variables that could alter execution flow
+// or inject code when running on non-sandboxed hosts (Gateway/Node).
+const DANGEROUS_HOST_ENV_VARS = new Set([
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "LD_AUDIT",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "RUBYLIB",
+  "PERL5LIB",
+  "BASH_ENV",
+  "ENV",
+  "GCONV_PATH",
+  "IFS",
+  "SSLKEYLOGFILE",
+]);
+const DANGEROUS_HOST_ENV_PREFIXES = ["DYLD_", "LD_"];
+
+// Centralized sanitization helper.
+// Throws an error if dangerous variables or PATH modifications are detected on the host.
+function validateHostEnv(env: Record<string, string>): void {
+  for (const key of Object.keys(env)) {
+    const upperKey = key.toUpperCase();
+
+    // 1. Block known dangerous variables (Fail Closed)
+    if (DANGEROUS_HOST_ENV_PREFIXES.some((prefix) => upperKey.startsWith(prefix))) {
+      throw new Error(
+        `Security Violation: Environment variable '${key}' is forbidden during host execution.`,
+      );
+    }
+    if (DANGEROUS_HOST_ENV_VARS.has(upperKey)) {
+      throw new Error(
+        `Security Violation: Environment variable '${key}' is forbidden during host execution.`,
+      );
+    }
+
+    // 2. Strictly block PATH modification on host
+    // Allowing custom PATH on the gateway/node can lead to binary hijacking.
+    if (upperKey === "PATH") {
+      throw new Error(
+        "Security Violation: Custom 'PATH' variable is forbidden during host execution.",
+      );
+    }
+  }
+}
+const DEFAULT_MAX_OUTPUT = clampNumber(
+  readEnvInt("PI_BASH_MAX_OUTPUT_CHARS"),
+  200_000,
+  1_000,
+  200_000,
+);
+const DEFAULT_PENDING_MAX_OUTPUT = clampNumber(
+  readEnvInt("OPENCLAW_BASH_PENDING_MAX_OUTPUT_CHARS"),
+  200_000,
+  1_000,
+  200_000,
+);
+const DEFAULT_PATH =
+  process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const DEFAULT_NOTIFY_TAIL_CHARS = 400;
+const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000;
+const DEFAULT_APPROVAL_REQUEST_TIMEOUT_MS = 130_000;
+const DEFAULT_APPROVAL_RUNNING_NOTICE_MS = 10_000;
+const APPROVAL_SLUG_LENGTH = 8;
+
+type PtyExitEvent = { exitCode: number; signal?: number };
+type PtyListener<T> = (event: T) => void;
+type PtyHandle = {
+  pid: number;
+  write: (data: string | Buffer) => void;
+  onData: (listener: PtyListener<string>) => void;
+  onExit: (listener: PtyListener<PtyExitEvent>) => void;
+};
+type PtySpawn = (
+  file: string,
+  args: string[] | string,
+  options: {
+    name?: string;
+    cols?: number;
+    rows?: number;
+    cwd?: string;
+    env?: Record<string, string>;
+  },
+) => PtyHandle;
+
+type ExecProcessOutcome = {
+  status: "completed" | "failed";
+  exitCode: number | null;
+  exitSignal: NodeJS.Signals | number | null;
+  durationMs: number;
+  aggregated: string;
+  timedOut: boolean;
+  reason?: string;
+};
+
+type ExecProcessHandle = {
+  session: ProcessSession;
+  startedAt: number;
+  pid?: number;
+  promise: Promise<ExecProcessOutcome>;
+  kill: () => void;
+};
+
+export type ExecMainSessionPolicy = {
+  forbidLongExec?: boolean;
+  requireBackgroundForExec?: boolean;
+  maxExecTimeoutSec?: number;
+};
+
 export type ExecToolDefaults = {
   host?: ExecHost;
   security?: ExecSecurity;
@@ -83,6 +196,7 @@ export type ExecToolDefaults = {
   notifyOnExit?: boolean;
   notifyOnExitEmptySuccess?: boolean;
   cwd?: string;
+  mainSessionPolicy?: ExecMainSessionPolicy;
 };
 
 export type { BashSandboxConfig } from "./bash-tools.shared.js";
@@ -211,6 +325,19 @@ async function validateScriptFileForShellBleed(params: {
   }
 }
 
+function isMainAgentSession(sessionKey?: string) {
+  const parsed = parseAgentSessionKey(sessionKey);
+  return parsed?.rest === "main";
+}
+
+function resolveMainSessionMaxExecTimeoutSec(policy?: ExecMainSessionPolicy) {
+  const raw = policy?.maxExecTimeoutSec;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+    return 120;
+  }
+  return Math.floor(raw);
+}
+
 export function createExecTool(
   defaults?: ExecToolDefaults,
   // oxlint-disable-next-line typescript/no-explicit-any
@@ -262,6 +389,30 @@ export function createExecTool(
 
       if (!params.command) {
         throw new Error("Provide a command to start.");
+      }
+
+      const mainSessionPolicy = defaults?.mainSessionPolicy;
+      if (isMainAgentSession(defaults?.sessionKey) && mainSessionPolicy?.forbidLongExec) {
+        const maxExecTimeoutSec = resolveMainSessionMaxExecTimeoutSec(mainSessionPolicy);
+        const timeoutSec = typeof params.timeout === "number" ? params.timeout : undefined;
+        const backgroundRequestedByPolicy = params.background === true;
+        const yieldRequestedByPolicy = typeof params.yieldMs === "number";
+        const yieldExceedsLimit =
+          !yieldRequestedByPolicy || (params.yieldMs as number) > 120_000;
+        const timeoutMissingOrTooLarge =
+          timeoutSec === undefined || timeoutSec <= 0 || timeoutSec > maxExecTimeoutSec;
+        const longExecByTimeout = timeoutMissingOrTooLarge;
+        const longExecByForeground =
+          !backgroundRequestedByPolicy &&
+          (mainSessionPolicy.requireBackgroundForExec || yieldExceedsLimit);
+        if (longExecByTimeout || longExecByForeground) {
+          throw new Error(
+            [
+              `Main session policy blocked exec: this command is considered long-running (timeout must be <= ${maxExecTimeoutSec}s and long runs must use background mode).`,
+              "Use sessions_spawn for longer tasks, or rerun exec with background=true / an appropriate yieldMs and timeout.",
+            ].join("\n"),
+          );
+        }
       }
 
       const maxOutput = DEFAULT_MAX_OUTPUT;
