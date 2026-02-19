@@ -2,6 +2,18 @@
 
 The Exec Supervisor provides out-of-process execution management for the Gateway using ZeroMQ communication. This decouples child process stdout/stderr handling from the Gateway's main event loop, preventing high-concurrency exec workloads from blocking other Gateway operations.
 
+## Protocol Version
+
+Current protocol version: **2**
+
+### v2 Features (new)
+
+- **Push mode event delivery**: Real-time events via PUB/SUB socket
+- **Local event buffering**: Client maintains per-job event buffer for low-latency access
+- **Gap detection & auto-backfill**: Automatically detects and fills missing events
+- **Job journal persistence**: Supervisor persists active job state for recovery
+- **High water mark (HWM)**: Backpressure control to prevent memory exhaustion
+
 ## Background
 
 OpenClaw's `exec` tool spawns child processes on behalf of the agent. In the default ("origin") mode, stdout/stderr callbacks are handled directly in the Gateway's main event loop. Under high concurrency (6+ parallel exec commands with frequent polling), this can saturate the event loop and cause responsiveness issues.
@@ -44,12 +56,12 @@ The ZMQ supervisor addresses this by:
                             │  └────────────┘  └────────────────┘  │
                             │        │                │            │
                             │        ▼                ▼            │
-                            │  ┌────────────────────────────┐      │
-                            │  │      Job Manager           │      │
-                            │  │  ┌─────┐ ┌─────┐ ┌─────┐   │      │
-                            │  │  │Job 1│ │Job 2│ │Job N│   │      │
-                            │  │  └─────┘ └─────┘ └─────┘   │      │
-                            │  └────────────────────────────┘      │
+                            │  ┌────────────────────────────────┐  │
+                            │  │      Job Manager + Journal     │  │
+                            │  │  ┌─────┐ ┌─────┐ ┌─────┐       │  │
+                            │  │  │Job 1│ │Job 2│ │Job N│       │  │
+                            │  │  └─────┘ └─────┘ └─────┘       │  │
+                            │  └────────────────────────────────┘  │
                             └──────────────────────────────────────┘
 ```
 
@@ -64,6 +76,8 @@ Used for synchronous operations:
 - `kill` - Terminate a job
 - `status` - Query job(s) status
 - `health` - Check supervisor health
+- `subscribe` - (v2) Request backfill events from a sequence number
+- `list-jobs` - (v2) List active jobs for recovery
 
 Default address: `tcp://127.0.0.1:18790`
 
@@ -76,6 +90,7 @@ Used for real-time event streaming:
 - `job.stderr` - Stderr output chunk
 - `job.exited` - Job exited normally
 - `job.failed` - Job failed (timeout, error, etc.)
+- `job.gap` - (v2) Gap marker indicating dropped events due to HWM
 
 Default address: `tcp://127.0.0.1:18791`
 
@@ -87,6 +102,41 @@ Each event includes:
 - `kind` - Event type
 - `payload` - Event-specific data
 
+## Subscribe Modes (v2)
+
+The client supports two subscribe modes:
+
+### Poll Mode (default)
+
+- Client actively polls for job output using REQ/REP
+- Traditional request-response pattern
+- Higher latency but simpler
+
+### Push Mode
+
+- Client receives events via SUB socket in real-time
+- Client maintains per-job event buffer
+- `poll` operations read from local buffer
+- Automatic gap detection and backfill
+- Lower latency and reduced polling overhead
+
+```typescript
+// Set subscribe mode
+client.setSubscribeMode("push");
+
+// Get current mode
+const mode = client.getSubscribeMode(); // "push" | "poll"
+```
+
+## Job Journal (v2)
+
+The supervisor persists active job state to a journal file for recovery:
+
+- Default path: `/tmp/exec-supervisor-journal.json`
+- Flush interval: 5 seconds
+- On restart, active jobs are recovered (marked as failed since processes are lost)
+- On gateway reconnect, client can resubscribe and backfill from last known sequence
+
 ## Configuration
 
 In `openclaw.yaml`:
@@ -95,6 +145,38 @@ In `openclaw.yaml`:
 tools:
   exec:
     mode: origin # or "zmq"
+```
+
+### Supervisor Configuration Options
+
+```typescript
+{
+  controlAddress?: string;       // Default: tcp://127.0.0.1:18790
+  eventAddress?: string;         // Default: tcp://127.0.0.1:18791
+  maxConcurrentJobs?: number;    // Default: 50
+  ringBufferMaxBytes?: number;   // Default: 2MB
+  chunkMergeIntervalMs?: number; // Default: 200ms
+  defaultTimeoutMs?: number;     // Default: 10 minutes
+  cleanupIntervalMs?: number;    // Default: 1 minute
+  finishedJobRetentionMs?: number; // Default: 5 minutes
+  eventHwm?: number;             // Default: 1000 (v2)
+  journalPath?: string;          // Default: /tmp/exec-supervisor-journal.json (v2)
+  journalFlushIntervalMs?: number; // Default: 5000 (v2)
+}
+```
+
+### Client Configuration Options
+
+```typescript
+{
+  controlAddress?: string;       // Default: tcp://127.0.0.1:18790
+  eventAddress?: string;         // Default: tcp://127.0.0.1:18791
+  requestTimeoutMs?: number;     // Default: 30 seconds
+  reconnectIntervalMs?: number;  // Default: 1 second
+  maxReconnectAttempts?: number; // Default: 10
+  subscribeMode?: "poll" | "push"; // Default: poll (v2)
+  autoBackfill?: boolean;        // Default: true (v2)
+}
 ```
 
 ## Runtime Mode Switching
@@ -148,6 +230,22 @@ Jobs support both overall timeout and no-output timeout:
 
 The Gateway client deduplicates events by `(jobId, seq)` to handle reconnection scenarios where events might be replayed.
 
+### High Water Mark (v2)
+
+Event publishing uses HWM to prevent memory exhaustion:
+
+- When queue exceeds HWM, oldest events are dropped
+- Gap events are published to notify clients
+- Clients can backfill missing events via `subscribe` request
+
+### Journal Persistence (v2)
+
+Active job state is persisted for recovery:
+
+- Survives supervisor restarts (jobs marked as failed since processes are lost)
+- Enables gateway reconnection without losing context
+- Automatic cleanup of completed jobs
+
 ## Implementation Files
 
 - `src/process/exec-supervisor/server.ts` - Standalone supervisor process
@@ -155,3 +253,11 @@ The Gateway client deduplicates events by `(jobId, seq)` to handle reconnection 
 - `src/process/exec-supervisor/dispatcher.ts` - Mode switching logic
 - `src/process/exec-supervisor/types.ts` - Protocol types
 - `src/process/exec-supervisor/protocol.ts` - Protocol constants
+
+## Tests
+
+- `src/process/exec-supervisor/server.test.ts` - Server unit tests
+- `src/process/exec-supervisor/client.test.ts` - Client unit tests
+- `src/process/exec-supervisor/dispatcher.test.ts` - Dispatcher tests
+- `src/process/exec-supervisor/v2.test.ts` - v2 feature tests (push mode, journal, etc.)
+- `src/process/exec-supervisor/perf.test.ts` - Performance tests

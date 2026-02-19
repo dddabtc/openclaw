@@ -224,6 +224,7 @@ describe("exec-supervisor performance", () => {
           spawnTime: Date.now(),
           chunks: [] as OutputChunk[],
           events: [] as JobEvent[],
+          firstOutputTime: undefined as number | undefined,
         };
         jobs.push(job);
 
