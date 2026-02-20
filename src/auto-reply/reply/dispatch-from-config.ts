@@ -13,6 +13,7 @@ import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
 import { maybeApplyTtsToPayload, normalizeTtsAutoMode, resolveTtsConfig } from "../../tts/tts.js";
+import { maybeHandleControlPlaneCommand } from "../control-plane.js";
 import { getReplyFromConfig } from "../reply.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
@@ -203,6 +204,14 @@ export async function dispatchReplyFromConfig(params: {
   if (shouldSkipDuplicateInbound(ctx)) {
     recordProcessed("skipped", { reason: "duplicate" });
     return { queuedFinal: false, counts: dispatcher.getQueuedCounts() };
+  }
+
+  const controlHandled = await maybeHandleControlPlaneCommand({ ctx, cfg, dispatcher });
+  if (controlHandled.handled) {
+    const counts = dispatcher.getQueuedCounts();
+    recordProcessed("completed", { reason: "control_plane" });
+    markIdle("message_completed");
+    return { queuedFinal: counts.final > 0, counts };
   }
 
   const inboundAudio = isInboundAudioContext(ctx);
