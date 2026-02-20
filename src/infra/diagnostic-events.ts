@@ -134,6 +134,14 @@ export type DiagnosticHeartbeatEvent = DiagnosticBaseEvent & {
   queued: number;
 };
 
+
+export type DiagnosticControlCommandEvent = DiagnosticBaseEvent & {
+  type: "command_ingress" | "control_dequeue" | "ack_sent" | "abort_dispatched" | "status_replied";
+  sessionKey?: string;
+  command: "stop" | "status";
+  handled?: boolean;
+};
+
 export type DiagnosticToolLoopEvent = DiagnosticBaseEvent & {
   type: "tool.loop";
   sessionKey?: string;
@@ -160,7 +168,8 @@ export type DiagnosticEventPayload =
   | DiagnosticLaneDequeueEvent
   | DiagnosticRunAttemptEvent
   | DiagnosticHeartbeatEvent
-  | DiagnosticToolLoopEvent;
+  | DiagnosticToolLoopEvent
+  | DiagnosticControlCommandEvent;
 
 export type DiagnosticEventInput = DiagnosticEventPayload extends infer Event
   ? Event extends DiagnosticEventPayload

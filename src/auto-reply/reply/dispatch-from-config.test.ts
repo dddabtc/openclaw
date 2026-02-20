@@ -19,6 +19,8 @@ const diagnosticMocks = vi.hoisted(() => ({
   logMessageQueued: vi.fn(),
   logMessageProcessed: vi.fn(),
   logSessionStateChange: vi.fn(),
+  logLaneEnqueue: vi.fn(),
+  logLaneDequeue: vi.fn(),
 }));
 const hookMocks = vi.hoisted(() => ({
   runner: {
@@ -51,10 +53,16 @@ vi.mock("./abort.js", () => ({
   },
 }));
 
+vi.mock("../../process/command-queue.js", () => ({
+  enqueueCommandInLane: vi.fn(async (_lane: string, task: () => Promise<unknown>) => await task()),
+}));
+
 vi.mock("../../logging/diagnostic.js", () => ({
   logMessageQueued: diagnosticMocks.logMessageQueued,
   logMessageProcessed: diagnosticMocks.logMessageProcessed,
   logSessionStateChange: diagnosticMocks.logSessionStateChange,
+  logLaneEnqueue: diagnosticMocks.logLaneEnqueue,
+  logLaneDequeue: diagnosticMocks.logLaneDequeue,
 }));
 
 vi.mock("../../plugins/hook-runner-global.js", () => ({
@@ -65,7 +73,7 @@ vi.mock("../../hooks/internal-hooks.js", () => ({
   triggerInternalHook: internalHookMocks.triggerInternalHook,
 }));
 
-const { dispatchReplyFromConfig } = await import("./dispatch-from-config.js");
+const { dispatchReplyFromConfig, matchStrictControlCommand } = await import("./dispatch-from-config.js");
 const { resetInboundDedupe } = await import("./inbound-dedupe.js");
 
 const noAbortResult = { handled: false, aborted: false } as const;
@@ -538,4 +546,55 @@ describe("dispatchReplyFromConfig", () => {
       }),
     );
   });
+
+  it("matches only full /stop and /status commands", () => {
+    expect(matchStrictControlCommand(" /stop ")).toBe("stop");
+    expect(matchStrictControlCommand("/status@openclaw_bot")).toBe("status");
+    expect(matchStrictControlCommand("hey /stop")).toBeNull();
+    expect(matchStrictControlCommand("/status now")).toBeNull();
+    expect(matchStrictControlCommand("/stop please")).toBeNull();
+  });
+
+  it("handles /status in control lane without invoking model resolver", async () => {
+    setNoAbort();
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "slack",
+      Surface: "slack",
+      CommandBody: "/status",
+      RawBody: "/status",
+      Body: "/status",
+    });
+    const replyResolver = vi.fn(async () => {
+      throw new Error("model unavailable");
+    });
+
+    const result = await dispatchReplyFromConfig({ ctx, cfg: emptyConfig, dispatcher, replyResolver });
+
+    expect(replyResolver).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalled();
+    expect(result.queuedFinal).toBe(true);
+  });
+
+  it("times out /stop abort dispatch and replies with timeout reason", async () => {
+    mocks.tryFastAbortFromMessage.mockImplementation(
+      () => new Promise<AbortResult>(() => undefined),
+    );
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "slack",
+      Surface: "slack",
+      CommandBody: "/stop",
+      RawBody: "/stop",
+      Body: "/stop",
+    });
+
+    await dispatchReplyFromConfig({ ctx, cfg: emptyConfig, dispatcher });
+
+    const calls = (dispatcher.sendFinalReply as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(String(calls[0]?.[0]?.text ?? "")).toContain("Stopping");
+    expect(String(calls[calls.length - 1]?.[0]?.text ?? "")).toContain("timeout");
+  }, 10000);
+
 });
