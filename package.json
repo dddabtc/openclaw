@@ -179,7 +179,7 @@
     "undici": "^7.22.0",
     "ws": "^8.19.0",
     "yaml": "^2.8.2",
-    "zeromq": "6.1.2",
+    "zeromq": "6.5.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
