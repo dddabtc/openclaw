@@ -147,6 +147,21 @@ tools:
     mode: origin # or "zmq"
 ```
 
+`tools.exec.mode` accepts only two values:
+
+- `origin`: route exec jobs to the in-process ProcessSupervisor
+- `zmq`: route exec jobs to the external exec-supervisor client/server
+
+### runExecProcess routing behavior
+
+At runtime, `runExecProcess` follows the active exec mode:
+
+- `origin` mode: spawn/poll/kill are handled in-process by the Gateway supervisor
+- `zmq` mode: spawn/poll/kill are forwarded to the ZMQ supervisor over control/event sockets
+
+When `zmq` is selected and the supervisor is unavailable/unhealthy, exec returns an explicit error.
+There is no silent fallback to `origin` for that request.
+
 ### Supervisor Configuration Options
 
 ```typescript
@@ -194,6 +209,7 @@ Switching modes:
 - Only affects new exec tasks; running tasks continue in their original mode
 - Switching to `zmq` requires a healthy supervisor (health check is performed)
 - Switching to `origin` always succeeds
+- If `zmq` is requested but supervisor health checks fail, mode stays `origin` and an explicit error is returned (no silent fallback)
 
 ## Running the Supervisor
 
@@ -207,6 +223,37 @@ Options:
   --event=<addr>      Event socket address (default: tcp://127.0.0.1:18791)
   --max-jobs=<n>      Max concurrent jobs (default: 50)
   --ring-buffer=<n>   Ring buffer size in bytes (default: 2097152)
+```
+
+## Runtime verification (origin + zmq)
+
+1. Check mode + health:
+
+```bash
+/exec-mode
+```
+
+2. Verify origin execution path:
+
+```bash
+/exec-mode origin
+# run a small exec command and confirm success
+```
+
+3. Verify zmq execution path:
+
+```bash
+/exec-mode zmq
+# run a small exec command and confirm success
+```
+
+4. Verify explicit zmq failure behavior:
+
+```bash
+# stop exec-supervisor while mode is zmq
+# run exec again
+# expect explicit supervisor unavailable/unhealthy error
+# no automatic fallback to origin
 ```
 
 ## Features

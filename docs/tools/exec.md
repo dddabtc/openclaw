@@ -83,11 +83,43 @@ Use `/exec-mode` to view or change the mode at runtime:
 /exec-mode zmq       # Switch to ZMQ supervisor mode
 ```
 
+### Quick runtime verification
+
+1. Confirm current mode + supervisor health:
+
+   ```
+   /exec-mode
+   ```
+
+2. Verify `origin` path:
+
+   ```
+   /exec-mode origin
+   exec: echo origin-ok
+   ```
+
+3. Verify `zmq` path:
+
+   ```
+   /exec-mode zmq
+   exec: echo zmq-ok
+   ```
+
+4. Failure behavior check (supervisor down while in `zmq`):
+   - stop `exec-supervisor`
+   - run any `exec` command
+   - expect an explicit supervisor/unhealthy error (no automatic fallback to `origin`)
+
 Notes:
 
-- Switching only affects new exec tasks; running tasks continue in their original mode
-- Switching to `zmq` requires a healthy supervisor (health check is performed)
-- See [Exec Supervisor](/exec-supervisor) for architecture details and running the supervisor
+- `tools.exec.mode` only accepts `origin` or `zmq`.
+- Switching only affects new exec tasks; running tasks continue in their original mode.
+- `runExecProcess` routes new runs based on the active mode:
+  - `origin`: execute via the in-process ProcessSupervisor
+  - `zmq`: execute via the external exec-supervisor client (REQ/REP + PUB/SUB)
+- Switching to `zmq` requires a healthy supervisor (health check is performed).
+- If `zmq` mode is selected but the supervisor is unavailable/unhealthy, exec returns an explicit error (no silent fallback to `origin`).
+- See [Exec Supervisor](/exec-supervisor) for architecture details and running the supervisor.
 
 ## Config
 
