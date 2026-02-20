@@ -1359,4 +1359,73 @@ describe("runReplyAgent transient HTTP retry", () => {
     const payload = Array.isArray(result) ? result[0] : result;
     expect(payload?.text).toContain("Recovered response");
   });
+
+  it("aborts transient retry delay immediately when abort signal fires", async () => {
+    vi.useFakeTimers();
+    runEmbeddedPiAgentMock.mockRejectedValueOnce(new Error("521 Cloudflare"));
+
+    const typing = createMockTypingController();
+    const sessionCtx = {
+      Provider: "telegram",
+      MessageSid: "msg",
+    } as unknown as TemplateContext;
+    const resolvedQueue = { mode: "interrupt" } as unknown as QueueSettings;
+    const followupRun = {
+      prompt: "hello",
+      summaryLine: "hello",
+      enqueuedAt: Date.now(),
+      run: {
+        sessionId: "session",
+        sessionKey: "main",
+        messageProvider: "telegram",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        config: {},
+        skillsSnapshot: {},
+        provider: "anthropic",
+        model: "claude",
+        thinkLevel: "low",
+        verboseLevel: "off",
+        elevatedLevel: "off",
+        bashElevated: {
+          enabled: false,
+          allowed: false,
+          defaultLevel: "off",
+        },
+        timeoutMs: 1_000,
+        blockReplyBreak: "message_end",
+      },
+    } as unknown as FollowupRun;
+
+    const abort = new AbortController();
+    const runPromise = runReplyAgent({
+      commandBody: "hello",
+      followupRun,
+      queueKey: "main",
+      resolvedQueue,
+      shouldSteer: false,
+      shouldFollowup: false,
+      isActive: false,
+      isStreaming: false,
+      typing,
+      sessionCtx,
+      opts: { abortSignal: abort.signal },
+      defaultModel: "anthropic/claude-opus-4-5",
+      resolvedVerboseLevel: "off",
+      isNewSession: false,
+      blockStreamingEnabled: false,
+      resolvedBlockStreamingBreak: "message_end",
+      shouldInjectGroupIntro: false,
+      typingMode: "instant",
+    });
+
+    abort.abort(new Error("manual abort"));
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await runPromise;
+
+    expect(runEmbeddedPiAgentMock).toHaveBeenCalledTimes(1);
+    const payload = Array.isArray(result) ? result[0] : result;
+    expect(String(payload?.text ?? "")).toContain("Agent failed before reply");
+  });
+
 });

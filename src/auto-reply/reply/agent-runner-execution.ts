@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { runCliAgent } from "../../agents/cli-runner.js";
 import { getCliSessionId } from "../../agents/cli-session.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
@@ -543,10 +544,14 @@ export async function runAgentTurnWithFallback(params: {
         defaultRuntime.error(
           `Transient HTTP provider error before reply (${message}). Retrying once in ${TRANSIENT_HTTP_RETRY_DELAY_MS}ms.`,
         );
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, TRANSIENT_HTTP_RETRY_DELAY_MS);
-        });
-        continue;
+        try {
+          await delay(TRANSIENT_HTTP_RETRY_DELAY_MS, undefined, {
+            signal: params.opts?.abortSignal,
+          });
+          continue;
+        } catch {
+          // Abort should short-circuit the retry wait and fall through to final error handling.
+        }
       }
 
       defaultRuntime.error(`Embedded agent failed before reply: ${message}`);
