@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Chat, Message } from "@grammyjs/types";
+import type { Chat, Message, UserFromGetMe } from "@grammyjs/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { escapeRegExp, formatEnvelopeTimestamp } from "../../test/helpers/envelope-timestamp.js";
 import {
@@ -172,7 +172,13 @@ describe("createTelegramBot", () => {
       getTelegramSequentialKey({
         message: mockMessage({ chat: mockChat({ id: 123 }), text: "/status" }),
       }),
-    ).toBe("telegram:123");
+    ).toBe("telegram:123:control");
+    expect(
+      getTelegramSequentialKey({
+        me: { username: "openclaw" } as UserFromGetMe,
+        message: mockMessage({ chat: mockChat({ id: 123 }), text: "/status@openclaw" }),
+      }),
+    ).toBe("telegram:123:control");
     expect(
       getTelegramSequentialKey({
         message: mockMessage({ chat: mockChat({ id: 123 }), text: "stop" }),

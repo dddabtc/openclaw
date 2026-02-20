@@ -94,10 +94,16 @@ export function getTelegramSequentialKey(ctx: {
   const chatId = msg?.chat?.id ?? ctx.chat?.id;
   const rawText = msg?.text ?? msg?.caption;
   const botUsername = ctx.me?.username;
-  if (isAbortRequestText(rawText, botUsername ? { botUsername } : undefined)) {
+  const normalizedText = (rawText ?? "").trim().toLowerCase();
+  const isStatusCommand =
+    normalizedText === "/status" ||
+    (botUsername ? normalizedText === `/status@${botUsername.toLowerCase()}` : false);
+  const isStopCommand = isAbortRequestText(rawText, botUsername ? { botUsername } : undefined);
+  if (isStopCommand || isStatusCommand) {
     if (typeof chatId === "number") {
       return `telegram:${chatId}:control`;
     }
+    logVerbose("telegram: control command received without numeric chat id; using fallback control lane");
     return "telegram:control";
   }
   const isGroup = msg?.chat?.type === "group" || msg?.chat?.type === "supergroup";
