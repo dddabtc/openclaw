@@ -196,9 +196,6 @@ export async function maybeHandleControlPlaneCommand(params: {
   }
 
   const auth = resolveCommandAuthorization({ ctx, cfg, commandAuthorized: ctx.CommandAuthorized });
-  if (!auth.isAuthorizedSender) {
-    return { handled: true };
-  }
 
   const adapter = String(ctx.Surface ?? ctx.Provider ?? "unknown").toLowerCase();
   const agentId = resolveSessionAgentId({ sessionKey: ctx.SessionKey ?? "", config: cfg });

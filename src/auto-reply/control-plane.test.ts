@@ -44,7 +44,11 @@ describe("maybeHandleControlPlaneCommand", () => {
   const originalStateDir = process.env.OPENCLAW_STATE_DIR;
   beforeEach(() => {
     abortMock.mockClear();
-    process.env.OPENCLAW_STATE_DIR = originalStateDir;
+    if (typeof originalStateDir === "string") {
+      process.env.OPENCLAW_STATE_DIR = originalStateDir;
+    } else {
+      delete process.env.OPENCLAW_STATE_DIR;
+    }
   });
 
   it("handles /stop in control plane and sends ack before final", async () => {
