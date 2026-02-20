@@ -275,6 +275,31 @@ Send these in WhatsApp/Telegram/Slack/Google Chat/Microsoft Teams/WebChat (group
 - `/restart` — restart the gateway (owner-only in groups)
 - `/activation mention|always` — group activation toggle (groups only)
 
+### Control-plane command handling (`/stop`, `/status`)
+
+`/stop` and `/status` are handled as control-plane commands (not normal session/data-plane chat turns):
+
+- strict full-match routing: `^/(stop|status)(?:@[\w_]+)?$`
+- `/status` uses a fast path (state read + immediate reply)
+- `/stop` uses two-stage reply (fast ACK, then final abort result)
+- command lifecycle is persisted under `~/.openclaw/{adapters,agents}/...` for audit/recovery
+
+Quick benchmark (concurrent + mixed):
+
+```bash
+node --import tsx scripts/control-plane-benchmark.ts
+# optional: ROUNDS=12 node --import tsx scripts/control-plane-benchmark.ts
+```
+
+Targets:
+
+- `/stop` ACK p95 < 200ms
+- `/status` p95 < 500ms
+- `/stop` total dispatch p95 < 2000ms
+- no collective timeout explosion under burst rounds
+
+Design + test details: `docs/experiments/plans/control-plane-command-handling.md`
+
 ## Apps (optional)
 
 The Gateway alone delivers a great experience. All apps are optional and add extra features.
