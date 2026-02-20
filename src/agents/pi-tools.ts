@@ -113,6 +113,7 @@ function resolveExecConfig(params: { cfg?: OpenClawConfig; agentId?: string }) {
     notifyOnExitEmptySuccess:
       agentExec?.notifyOnExitEmptySuccess ?? globalExec?.notifyOnExitEmptySuccess,
     applyPatch: agentExec?.applyPatch ?? globalExec?.applyPatch,
+    mainSessionPolicy: cfg?.sessionPolicies?.main,
   };
 }
 
@@ -150,19 +151,6 @@ export function resolveToolLoopDetectionConfig(params: {
       ...global.detectors,
       ...agent.detectors,
     },
-    host: globalExec?.host,
-    security: globalExec?.security,
-    ask: globalExec?.ask,
-    node: globalExec?.node,
-    pathPrepend: globalExec?.pathPrepend,
-    safeBins: globalExec?.safeBins,
-    backgroundMs: globalExec?.backgroundMs,
-    timeoutSec: globalExec?.timeoutSec,
-    approvalRunningNoticeMs: globalExec?.approvalRunningNoticeMs,
-    cleanupMs: globalExec?.cleanupMs,
-    notifyOnExit: globalExec?.notifyOnExit,
-    applyPatch: globalExec?.applyPatch,
-    mainSessionPolicy: cfg?.sessionPolicies?.main,
   };
 }
 
