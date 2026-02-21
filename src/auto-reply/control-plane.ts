@@ -5,6 +5,7 @@ import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { resolveCommandAuthorization } from "./command-auth.js";
+import { normalizeCommandBody } from "./commands-registry.js";
 import { formatAbortReplyText, tryFastAbortFromMessage } from "./reply/abort.js";
 import type { ReplyDispatcher } from "./reply/reply-dispatcher.js";
 import type { FinalizedMsgContext } from "./templating.js";
@@ -25,6 +26,17 @@ type ControlEnvelope = {
   raw: string;
   ingressAt: string;
   deadlineMs: number;
+  context?: {
+    from?: string;
+    to?: string;
+    provider?: string;
+    surface?: string;
+    chatType?: string;
+    commandAuthorized?: boolean;
+    senderId?: string;
+    senderName?: string;
+    senderUsername?: string;
+  };
 };
 
 type ControlState = {
@@ -42,15 +54,11 @@ export function matchStrictControlCommand(
   if (!rawTrimmed) {
     return null;
   }
-  const m = rawTrimmed.match(STRICT_CONTROL_COMMAND_RE);
-  if (!m) {
+  const normalized = normalizeCommandBody(rawTrimmed);
+  if (normalized !== "/stop" && normalized !== "/status") {
     return null;
   }
-  const command = m[1]?.toLowerCase();
-  if (command !== "stop" && command !== "status") {
-    return null;
-  }
-  return { command, rawTrimmed };
+  return { command: normalized.slice(1) as ControlCommand, rawTrimmed };
 }
 
 function appendJsonl(filePath: string, record: unknown): void {
@@ -139,6 +147,92 @@ async function withTimeout<T>(
   });
 }
 
+const agentControlChains = new Map<string, Promise<void>>();
+function enqueueAgentControl<T>(agentId: string, run: () => Promise<T>): Promise<T> {
+  const previous = agentControlChains.get(agentId) ?? Promise.resolve();
+  const chained = previous.catch(() => {}).then(run);
+  agentControlChains.set(
+    agentId,
+    chained.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return chained;
+}
+
+function buildReplayContext(envelope: ControlEnvelope): FinalizedMsgContext {
+  return {
+    SessionKey: envelope.sessionId,
+    CommandTargetSessionKey: envelope.sessionId,
+    Body: envelope.raw,
+    RawBody: envelope.raw,
+    CommandBody: envelope.raw,
+    Provider: envelope.context?.provider ?? envelope.adapter,
+    Surface: envelope.context?.surface ?? envelope.adapter,
+    From: envelope.context?.from ?? envelope.chatId,
+    To: envelope.context?.to ?? envelope.chatId,
+    ChatType: envelope.context?.chatType,
+    SenderId: envelope.context?.senderId ?? envelope.senderId,
+    SenderName: envelope.context?.senderName,
+    SenderUsername: envelope.context?.senderUsername,
+    CommandAuthorized: envelope.context?.commandAuthorized ?? true,
+  } as FinalizedMsgContext;
+}
+
+async function executeStopEnvelope(params: {
+  envelope: ControlEnvelope;
+  cfg: OpenClawConfig;
+  stateDir: string;
+  signal?: AbortSignal;
+}): Promise<{ ok: true; finalText: string } | { ok: false; reason: "timeout" | "aborted" }> {
+  const { envelope, cfg, stateDir, signal } = params;
+  const execWriter = new AgentControlExecutorWriter(envelope.agentId, stateDir);
+
+  const dispatch = await withTimeout(
+    tryFastAbortFromMessage({ ctx: buildReplayContext(envelope), cfg }),
+    3000,
+    signal,
+  );
+  if (!dispatch.ok) {
+    execWriter.appendEvent({
+      eventId: `evt_${crypto.randomUUID()}`,
+      commandId: envelope.commandId,
+      seq: envelope.seq,
+      agentId: envelope.agentId,
+      type: "TIMED_OUT",
+      at: new Date().toISOString(),
+      data: { phase: "dispatch", reason: dispatch.reason },
+    });
+    execWriter.writeState({
+      lastCommandId: envelope.commandId,
+      lastCommand: "stop",
+      status: "timed_out",
+      updatedAt: new Date().toISOString(),
+      lastResult: dispatch.reason,
+    });
+    return { ok: false, reason: dispatch.reason };
+  }
+
+  const finalText = formatAbortReplyText(dispatch.value.stoppedSubagents);
+  execWriter.appendEvent({
+    eventId: `evt_${crypto.randomUUID()}`,
+    commandId: envelope.commandId,
+    seq: envelope.seq,
+    agentId: envelope.agentId,
+    type: "DONE",
+    at: new Date().toISOString(),
+  });
+  execWriter.writeState({
+    lastCommandId: envelope.commandId,
+    lastCommand: "stop",
+    status: "done",
+    updatedAt: new Date().toISOString(),
+    lastResult: finalText,
+  });
+  return { ok: true, finalText };
+}
+
 function recoverNonTerminalCommands(agentId: string, stateDir: string): void {
   const queueFile = path.join(stateDir, "agents", agentId, "control-queue.jsonl");
   const eventsFile = path.join(stateDir, "agents", agentId, "control-events.jsonl");
@@ -217,6 +311,17 @@ export async function maybeHandleControlPlaneCommand(params: {
     raw: matched.rawTrimmed,
     ingressAt: now,
     deadlineMs: matched.command === "status" ? 1000 : 3000,
+    context: {
+      from: ctx.From,
+      to: ctx.To,
+      provider: ctx.Provider,
+      surface: ctx.Surface,
+      chatType: ctx.ChatType,
+      commandAuthorized: ctx.CommandAuthorized,
+      senderId: ctx.SenderId,
+      senderName: ctx.SenderName,
+      senderUsername: ctx.SenderUsername,
+    },
   };
 
   const adapterWriter = new AdapterCommandLogWriter(adapter, stateDir);
@@ -226,21 +331,7 @@ export async function maybeHandleControlPlaneCommand(params: {
   adapterWriter.write({ type: "RECEIVED", at: now, commandId, raw: matched.rawTrimmed });
 
   if (matched.command === "status") {
-    const statusResult = await withTimeout(Promise.resolve(execWriter.readState()), 1000, signal);
-    const text = statusResult.ok
-      ? `Status#${shortCommandId(commandId)}: ${statusResult.value.status ?? "idle"}`
-      : `Status#${shortCommandId(commandId)}: timeout`;
-    dispatcher.sendFinalReply({ text });
-    execWriter.appendEvent({
-      eventId: `evt_${crypto.randomUUID()}`,
-      commandId,
-      seq,
-      agentId,
-      type: "DONE",
-      at: new Date().toISOString(),
-      data: { fastPath: true, status: statusResult.ok ? "ok" : statusResult.reason },
-    });
-    return { handled: true };
+    return { handled: false };
   }
 
   ingressWriter.appendQueue(envelope);
@@ -275,47 +366,24 @@ export async function maybeHandleControlPlaneCommand(params: {
     at: new Date().toISOString(),
     data: { ok: ack.ok },
   });
+  execWriter.writeState({
+    lastCommandId: commandId,
+    lastCommand: matched.command,
+    status: "ack_sent",
+    updatedAt: new Date().toISOString(),
+  });
 
-  const dispatch = await withTimeout(tryFastAbortFromMessage({ ctx, cfg }), 3000, signal);
-  if (!dispatch.ok) {
+  const executeResult = await enqueueAgentControl(agentId, async () =>
+    executeStopEnvelope({ envelope, cfg, stateDir, signal }),
+  );
+
+  if (!executeResult.ok) {
     dispatcher.sendFinalReply({
-      text: `Stop failed [#${shortCommandId(commandId)}]: ${dispatch.reason}`,
-    });
-    execWriter.appendEvent({
-      eventId: `evt_${crypto.randomUUID()}`,
-      commandId,
-      seq,
-      agentId,
-      type: "TIMED_OUT",
-      at: new Date().toISOString(),
-      data: { phase: "dispatch", reason: dispatch.reason },
-    });
-    execWriter.writeState({
-      lastCommandId: commandId,
-      lastCommand: matched.command,
-      status: "timed_out",
-      updatedAt: new Date().toISOString(),
-      lastResult: dispatch.reason,
+      text: `Stop failed [#${shortCommandId(commandId)}]: ${executeResult.reason}`,
     });
     return { handled: true };
   }
 
-  const finalText = formatAbortReplyText(dispatch.value.stoppedSubagents);
-  dispatcher.sendFinalReply({ text: `${finalText} [#${shortCommandId(commandId)}]` });
-  execWriter.appendEvent({
-    eventId: `evt_${crypto.randomUUID()}`,
-    commandId,
-    seq,
-    agentId,
-    type: "DONE",
-    at: new Date().toISOString(),
-  });
-  execWriter.writeState({
-    lastCommandId: commandId,
-    lastCommand: matched.command,
-    status: "done",
-    updatedAt: new Date().toISOString(),
-    lastResult: finalText,
-  });
+  dispatcher.sendFinalReply({ text: `${executeResult.finalText} [#${shortCommandId(commandId)}]` });
   return { handled: true };
 }

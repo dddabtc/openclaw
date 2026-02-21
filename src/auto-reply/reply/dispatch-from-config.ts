@@ -3,15 +3,13 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { loadSessionStore, resolveStorePath } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
-import { emitDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
+import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import {
   logMessageProcessed,
   logMessageQueued,
   logSessionStateChange,
 } from "../../logging/diagnostic.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
-import { enqueueCommandInLane } from "../../process/command-queue.js";
-import { CommandLane } from "../../process/lanes.js";
 import { maybeApplyTtsToPayload, normalizeTtsAutoMode, resolveTtsConfig } from "../../tts/tts.js";
 import { maybeHandleControlPlaneCommand } from "../control-plane.js";
 import { getReplyFromConfig } from "../reply.js";
@@ -58,8 +56,6 @@ const isInboundAudioContext = (ctx: FinalizedMsgContext): boolean => {
 };
 
 const STRICT_CONTROL_COMMAND_RE = /^\s*\/(stop|status)(?:@[\w_]+)?\s*$/i;
-const CONTROL_ACK_TIMEOUT_MS = 1_000;
-const CONTROL_ABORT_DISPATCH_TIMEOUT_MS = 3_000;
 
 export function matchStrictControlCommand(text?: string): "stop" | "status" | null {
   if (!text) {
@@ -71,46 +67,6 @@ export function matchStrictControlCommand(text?: string): "stop" | "status" | nu
   }
   const command = match[1]?.toLowerCase();
   return command === "stop" || command === "status" ? command : null;
-}
-
-function createAbortError(): Error {
-  const err = new Error("control command aborted");
-  err.name = "AbortError";
-  return err;
-}
-
-async function runWithTimeout<T>(params: {
-  timeoutMs: number;
-  signal?: AbortSignal;
-  run: (signal: AbortSignal) => Promise<T>;
-}): Promise<T> {
-  if (params.signal?.aborted) {
-    throw createAbortError();
-  }
-  const controller = new AbortController();
-  const onAbort = () => controller.abort();
-  params.signal?.addEventListener("abort", onAbort, { once: true });
-  const timeout = setTimeout(() => controller.abort(), params.timeoutMs);
-  try {
-    const runPromise = params.run(controller.signal);
-    const abortPromise = new Promise<never>((_, reject) => {
-      controller.signal.addEventListener(
-        "abort",
-        () => {
-          if (params.signal?.aborted) {
-            reject(createAbortError());
-            return;
-          }
-          reject(new Error(`timeout ${params.timeoutMs}ms`));
-        },
-        { once: true },
-      );
-    });
-    return await Promise.race([runPromise, abortPromise]);
-  } finally {
-    clearTimeout(timeout);
-    params.signal?.removeEventListener("abort", onAbort);
-  }
 }
 
 const resolveSessionTtsAuto = (
@@ -341,112 +297,6 @@ export async function dispatchReplyFromConfig(params: {
       logVerbose(`dispatch-from-config: route-reply failed: ${result.error ?? "unknown error"}`);
     }
   };
-
-  const ingressBody = ctx.CommandBody ?? ctx.RawBody ?? ctx.Body;
-  const strictControlCommand = matchStrictControlCommand(ingressBody);
-  if (strictControlCommand) {
-    emitDiagnosticEvent({
-      type: "command_ingress",
-      sessionKey: ctx.SessionKey,
-      command: strictControlCommand,
-    });
-
-    const controlResult = await enqueueCommandInLane(CommandLane.Control, async () => {
-      emitDiagnosticEvent({
-        type: "control_dequeue",
-        sessionKey: ctx.SessionKey,
-        command: strictControlCommand,
-      });
-
-      const emitPayload = async (payload: ReplyPayload, signal?: AbortSignal): Promise<boolean> => {
-        if (shouldRouteToOriginating && originatingChannel && originatingTo) {
-          const result = await routeReply({
-            payload,
-            channel: originatingChannel,
-            to: originatingTo,
-            sessionKey: ctx.SessionKey,
-            accountId: ctx.AccountId,
-            threadId: ctx.MessageThreadId,
-            cfg,
-            abortSignal: signal,
-          });
-          return result.ok;
-        }
-        return dispatcher.sendFinalReply(payload);
-      };
-
-      let queuedFinal = false;
-      const counts = dispatcher.getQueuedCounts();
-
-      if (strictControlCommand === "stop") {
-        const ackOk = await runWithTimeout({
-          timeoutMs: CONTROL_ACK_TIMEOUT_MS,
-          run: (signal) => emitPayload({ text: "Stopping..." }, signal),
-        });
-        if (ackOk) {
-          counts.final += 1;
-          emitDiagnosticEvent({
-            type: "ack_sent",
-            sessionKey: ctx.SessionKey,
-            command: "stop",
-          });
-        }
-
-        try {
-          const fastAbort = await runWithTimeout({
-            timeoutMs: CONTROL_ABORT_DISPATCH_TIMEOUT_MS,
-            run: () => tryFastAbortFromMessage({ ctx, cfg }),
-          });
-          emitDiagnosticEvent({
-            type: "abort_dispatched",
-            sessionKey: ctx.SessionKey,
-            command: "stop",
-            handled: fastAbort.handled,
-          });
-          const doneText = fastAbort.handled
-            ? formatAbortReplyText(fastAbort.stoppedSubagents)
-            : "⚠️ Stop request was not applied (not authorized or no active target).";
-          queuedFinal = await emitPayload({ text: doneText });
-          if (queuedFinal) {
-            counts.final += 1;
-          }
-        } catch (err) {
-          const reason = String(err);
-          queuedFinal = await emitPayload({
-            text: `⚠️ Stop failed: ${reason.includes("timeout") ? "abort dispatch timeout (3s)" : reason}`,
-          });
-          if (queuedFinal) {
-            counts.final += 1;
-          }
-        }
-
-        return { queuedFinal, counts };
-      }
-
-      const statusOk = await runWithTimeout({
-        timeoutMs: CONTROL_ACK_TIMEOUT_MS,
-        run: (signal) =>
-          emitPayload(
-            {
-              text: "✅ Status: control plane is responsive.",
-            },
-            signal,
-          ),
-      });
-      if (statusOk) {
-        counts.final += 1;
-        emitDiagnosticEvent({
-          type: "status_replied",
-          sessionKey: ctx.SessionKey,
-          command: "status",
-        });
-      }
-      return { queuedFinal: statusOk, counts };
-    });
-
-    recordProcessed("completed", { reason: `control_${strictControlCommand}` });
-    return controlResult;
-  }
 
   markProcessing();
 

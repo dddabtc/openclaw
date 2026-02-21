@@ -51,6 +51,16 @@ type AgentConfig = Partial<AgentDefaults> & {
 
 export const formatTokenCount = formatTokenCountShared;
 
+function resolveDistPublishDateTime(): string {
+  try {
+    const stat = fs.statSync(new URL(import.meta.url));
+    const d = new Date(stat.mtimeMs);
+    return `${d.toISOString().slice(0, 19).replace("T", " ")}(UTC)`;
+  } catch {
+    return "unknown";
+  }
+}
+
 type QueueStatus = {
   mode?: string;
   depth?: number;
@@ -540,6 +550,7 @@ export function buildStatusMessage(args: StatusArgs): string {
     : null;
   const commit = resolveCommitHash();
   const versionLine = `🦞 OpenClaw ${VERSION}${commit ? ` (${commit})` : ""}`;
+  const personalLine = `🏷️ PERSONAL BUILD · ${resolveDistPublishDateTime()}`;
   const usagePair = formatUsagePair(inputTokens, outputTokens);
   const cacheLine = formatCacheLine(inputTokens, cacheRead, cacheWrite);
   const costLine = costLabel ? `💵 Cost: ${costLabel}` : null;
@@ -550,6 +561,7 @@ export function buildStatusMessage(args: StatusArgs): string {
 
   return [
     versionLine,
+    personalLine,
     args.timeLine,
     modelLine,
     fallbackLine,

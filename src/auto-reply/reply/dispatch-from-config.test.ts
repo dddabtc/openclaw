@@ -73,7 +73,8 @@ vi.mock("../../hooks/internal-hooks.js", () => ({
   triggerInternalHook: internalHookMocks.triggerInternalHook,
 }));
 
-const { dispatchReplyFromConfig, matchStrictControlCommand } = await import("./dispatch-from-config.js");
+const { dispatchReplyFromConfig, matchStrictControlCommand } =
+  await import("./dispatch-from-config.js");
 const { resetInboundDedupe } = await import("./inbound-dedupe.js");
 
 const noAbortResult = { handled: false, aborted: false } as const;
@@ -574,7 +575,7 @@ describe("dispatchReplyFromConfig", () => {
     expect(matchStrictControlCommand("/stop please")).toBeNull();
   });
 
-  it("handles /status in control lane without invoking model resolver", async () => {
+  it("routes /status through regular command handling when control-plane fast path is disabled", async () => {
     setNoAbort();
     const dispatcher = createDispatcher();
     const ctx = buildTestCtx({
@@ -584,13 +585,16 @@ describe("dispatchReplyFromConfig", () => {
       RawBody: "/status",
       Body: "/status",
     });
-    const replyResolver = vi.fn(async () => {
-      throw new Error("model unavailable");
+    const replyResolver = vi.fn(async () => ({ text: "ok" }) as ReplyPayload);
+
+    const result = await dispatchReplyFromConfig({
+      ctx,
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver,
     });
 
-    const result = await dispatchReplyFromConfig({ ctx, cfg: emptyConfig, dispatcher, replyResolver });
-
-    expect(replyResolver).not.toHaveBeenCalled();
+    expect(replyResolver).toHaveBeenCalled();
     expect(dispatcher.sendFinalReply).toHaveBeenCalled();
     expect(result.queuedFinal).toBe(true);
   });
@@ -615,5 +619,4 @@ describe("dispatchReplyFromConfig", () => {
     expect(String(calls[0]?.[0]?.text ?? "")).toContain("Stopping");
     expect(String(calls[calls.length - 1]?.[0]?.text ?? "")).toContain("timeout");
   }, 10000);
-
 });
