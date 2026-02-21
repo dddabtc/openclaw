@@ -551,6 +551,7 @@ export function buildStatusMessage(args: StatusArgs): string {
   const commit = resolveCommitHash();
   const versionLine = `🦞 OpenClaw ${VERSION}${commit ? ` (${commit})` : ""}`;
   const personalLine = `🏷️ PERSONAL BUILD · ${resolveDistPublishDateTime()}`;
+  const byLine = `by: https://github.com/dddabtc`;
   const usagePair = formatUsagePair(inputTokens, outputTokens);
   const cacheLine = formatCacheLine(inputTokens, cacheRead, cacheWrite);
   const costLine = costLabel ? `💵 Cost: ${costLabel}` : null;
@@ -562,6 +563,7 @@ export function buildStatusMessage(args: StatusArgs): string {
   return [
     versionLine,
     personalLine,
+    byLine,
     args.timeLine,
     modelLine,
     fallbackLine,

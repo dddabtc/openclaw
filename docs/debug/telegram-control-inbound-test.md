@@ -102,3 +102,13 @@ python3 scripts/test_telegram_subsession_pressure.py \
   --messages "ssh 到192.168.1.136 用户名是 zhaod，执行 hostname 并把结果告诉我" \
   --rounds 1 --pause 0.5 --settle 20
 ```
+
+## Status banner format (current)
+
+The `/status` output includes a custom banner block:
+
+1. `🦞 OpenClaw <version> (<commit>)`
+2. `🏷️ PERSONAL BUILD · <dist-publish-time>(UTC)`
+3. `by: https://github.com/dddabtc`
+
+This is rendered in the fast status path currently used on 113.
