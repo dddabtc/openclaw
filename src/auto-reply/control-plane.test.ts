@@ -33,7 +33,8 @@ function createDispatcher(): ReplyDispatcher {
 describe("control plane strict matching", () => {
   it("matches only full /stop or /status forms", () => {
     expect(matchStrictControlCommand(" /stop ")?.command).toBe("stop");
-    expect(matchStrictControlCommand("/status@openclaw")?.command).toBe("status");
+    expect(matchStrictControlCommand("/status@openclaw")).toBeNull();
+    expect(matchStrictControlCommand(" /STATUS ")?.command).toBe("status");
     expect(matchStrictControlCommand("hello /stop")).toBeNull();
     expect(matchStrictControlCommand("/status now")).toBeNull();
     expect(matchStrictControlCommand("/stop\nnext")).toBeNull();

@@ -55,7 +55,9 @@ const isInboundAudioContext = (ctx: FinalizedMsgContext): boolean => {
   return AUDIO_HEADER_RE.test(trimmed);
 };
 
-const STRICT_CONTROL_COMMAND_RE = /^\s*\/(stop|status)(?:@[\w_]+)?\s*$/i;
+const STRICT_CONTROL_COMMAND_RE = /^\s*\/(stop|status)\s*$/i;
+const CONTROL_ACK_TIMEOUT_MS = 1_000;
+const CONTROL_ABORT_DISPATCH_TIMEOUT_MS = 3_000;
 
 export function matchStrictControlCommand(text?: string): "stop" | "status" | null {
   if (!text) {

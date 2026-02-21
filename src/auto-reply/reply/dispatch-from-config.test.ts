@@ -569,7 +569,8 @@ describe("dispatchReplyFromConfig", () => {
 
   it("matches only full /stop and /status commands", () => {
     expect(matchStrictControlCommand(" /stop ")).toBe("stop");
-    expect(matchStrictControlCommand("/status@openclaw_bot")).toBe("status");
+    expect(matchStrictControlCommand("/status@openclaw_bot")).toBeNull();
+    expect(matchStrictControlCommand(" /STATUS ")).toBe("status");
     expect(matchStrictControlCommand("hey /stop")).toBeNull();
     expect(matchStrictControlCommand("/status now")).toBeNull();
     expect(matchStrictControlCommand("/stop please")).toBeNull();
@@ -585,7 +586,9 @@ describe("dispatchReplyFromConfig", () => {
       RawBody: "/status",
       Body: "/status",
     });
-    const replyResolver = vi.fn(async () => ({ text: "ok" }) as ReplyPayload);
+    const replyResolver = vi.fn(async () => {
+      throw new Error("model unavailable");
+    });
 
     const result = await dispatchReplyFromConfig({
       ctx,
@@ -594,7 +597,7 @@ describe("dispatchReplyFromConfig", () => {
       replyResolver,
     });
 
-    expect(replyResolver).toHaveBeenCalled();
+    expect(replyResolver).not.toHaveBeenCalled();
     expect(dispatcher.sendFinalReply).toHaveBeenCalled();
     expect(result.queuedFinal).toBe(true);
   });

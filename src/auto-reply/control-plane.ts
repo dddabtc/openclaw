@@ -5,13 +5,12 @@ import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { resolveCommandAuthorization } from "./command-auth.js";
-import { normalizeCommandBody } from "./commands-registry.js";
 import { formatAbortReplyText, tryFastAbortFromMessage } from "./reply/abort.js";
 import type { ReplyDispatcher } from "./reply/reply-dispatcher.js";
 import { buildStatusMessage } from "./status.js";
 import type { FinalizedMsgContext } from "./templating.js";
 
-export const STRICT_CONTROL_COMMAND_RE = /^\/(stop|status)(?:@[\w_]+)?$/i;
+export const STRICT_CONTROL_COMMAND_RE = /^\/(stop|status)$/i;
 
 type ControlCommand = "stop" | "status";
 
@@ -55,11 +54,15 @@ export function matchStrictControlCommand(
   if (!rawTrimmed) {
     return null;
   }
-  const normalized = normalizeCommandBody(rawTrimmed);
-  if (normalized !== "/stop" && normalized !== "/status") {
+  const match = rawTrimmed.match(STRICT_CONTROL_COMMAND_RE);
+  if (!match) {
     return null;
   }
-  return { command: normalized.slice(1) as ControlCommand, rawTrimmed };
+  const command = match[1]?.toLowerCase();
+  if (command !== "stop" && command !== "status") {
+    return null;
+  }
+  return { command, rawTrimmed };
 }
 
 function appendJsonl(filePath: string, record: unknown): void {
