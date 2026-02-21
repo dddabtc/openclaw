@@ -8,6 +8,7 @@ import { resolveCommandAuthorization } from "./command-auth.js";
 import { normalizeCommandBody } from "./commands-registry.js";
 import { formatAbortReplyText, tryFastAbortFromMessage } from "./reply/abort.js";
 import type { ReplyDispatcher } from "./reply/reply-dispatcher.js";
+import { buildStatusMessage } from "./status.js";
 import type { FinalizedMsgContext } from "./templating.js";
 
 export const STRICT_CONTROL_COMMAND_RE = /^\/(stop|status)(?:@[\w_]+)?$/i;
@@ -331,7 +332,35 @@ export async function maybeHandleControlPlaneCommand(params: {
   adapterWriter.write({ type: "RECEIVED", at: now, commandId, raw: matched.rawTrimmed });
 
   if (matched.command === "status") {
-    return { handled: false };
+    const statusText = buildStatusMessage({
+      config: cfg,
+      agent: {
+        model: {
+          primary: cfg.agents?.defaults?.model?.primary ?? "unknown/unknown",
+        },
+        contextTokens: cfg.agents?.defaults?.contextTokens,
+      } as never,
+      agentId,
+      sessionKey: ctx.SessionKey,
+      resolvedVerbose: "off",
+      resolvedReasoning: "off",
+      queue: {
+        mode: "collect",
+        depth: 0,
+      },
+      includeTranscriptUsage: false,
+    });
+    dispatcher.sendFinalReply({ text: statusText });
+    execWriter.appendEvent({
+      eventId: `evt_${crypto.randomUUID()}`,
+      commandId,
+      seq,
+      agentId,
+      type: "DONE",
+      at: new Date().toISOString(),
+      data: { fastPath: true, status: "ok" },
+    });
+    return { handled: true };
   }
 
   ingressWriter.appendQueue(envelope);

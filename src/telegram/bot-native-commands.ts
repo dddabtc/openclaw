@@ -66,6 +66,7 @@ import {
 import { buildInlineKeyboard } from "./send.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
+const STRICT_COMMAND_WORD_RE = /^\/[A-Za-z0-9_]+(?:@[\w_]+)?$/i;
 
 type TelegramNativeCommandContext = Context & { match?: string };
 
@@ -549,6 +550,9 @@ export const registerTelegramNativeCommands = ({
                 })
               : null;
           const sessionKey = threadKeys?.sessionKey ?? baseSessionKey;
+          const strictCommandWord = STRICT_COMMAND_WORD_RE.test((prompt ?? "").trim());
+          const commandLaneSessionKey = `telegram:commands:${senderId || chatId}`;
+          const effectiveSessionKey = strictCommandWord ? commandLaneSessionKey : sessionKey;
           const skillFilter = firstDefined(topicConfig?.skills, groupConfig?.skills);
           const systemPromptParts = [
             groupConfig?.systemPrompt?.trim() || null,
@@ -582,7 +586,7 @@ export const registerTelegramNativeCommands = ({
             WasMentioned: true,
             CommandAuthorized: commandAuthorized,
             CommandSource: "native" as const,
-            SessionKey: `telegram:slash:${senderId || chatId}`,
+            SessionKey: effectiveSessionKey,
             AccountId: route.accountId,
             CommandTargetSessionKey: sessionKey,
             MessageThreadId: threadSpec.id,

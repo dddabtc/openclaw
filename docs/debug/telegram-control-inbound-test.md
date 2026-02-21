@@ -70,3 +70,35 @@ For `/status`:
 
 - The script uses **real inbound path**, not synthetic local dispatch.
 - Rotate `api_hash` if leaked. Never commit secrets.
+
+## Command lane bypass (anti-blocking)
+
+Current behavior in `src/telegram/bot-native-commands.ts`:
+
+- Strict command-word messages matching `^/[A-Za-z0-9_]+(?:@[\w_]+)?$` are assigned
+  a separate session key: `telegram:commands:<senderId>`.
+- This decouples command handling from the normal chat lane and avoids long waits
+  when the main session is congested.
+
+## Sub-session routing pressure probe
+
+Additional script:
+
+- `scripts/test_telegram_subsession_pressure.py`
+
+Purpose:
+
+1. Send natural-language test prompts via Telethon
+2. Validate sample first (`INVALID_SAMPLE` vs tool-call detected)
+3. Determine route (`MAIN_SESSION` or `SUB_SESSION`)
+
+Example:
+
+```bash
+python3 scripts/test_telegram_subsession_pressure.py \
+  --api-id <API_ID> \
+  --api-hash <API_HASH> \
+  --target @<openclaw_bot_username> \
+  --messages "ssh 到192.168.1.136 用户名是 zhaod，执行 hostname 并把结果告诉我" \
+  --rounds 1 --pause 0.5 --settle 20
+```
