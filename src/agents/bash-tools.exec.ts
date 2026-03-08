@@ -167,32 +167,14 @@ function isMainAgentSession(sessionKey?: string): boolean {
   return !parsed.rest.includes("subagent:");
 }
 
-/**
- * SSH command patterns to detect in main session.
- */
-const SSH_COMMAND_PATTERNS = [
-  /^\s*ssh\b/i,
-  /^\s*scp\b/i,
-  /^\s*sftp\b/i,
-  /^\s*rsync\s+.*-e\s+['"]?ssh/i,
-  /^\s*rsync\s+.*--rsh\s*=\s*['"]?ssh/i,
-  /^\s*rsync\s+[^/]*:/i, // rsync to remote (user@host:path)
-];
-
-function isSshCommand(command: string): boolean {
-  return SSH_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
-}
-
 type MainSessionPolicyResult = { action: "allow" } | { action: "delegate"; reason: string };
 
 /**
  * Check main session policy for exec command.
  * Returns { action: "delegate" } if command should be run in a sub-session.
  *
- * PERSONAL BUILD v8: Transparent delegation (not blocking)
- * - Main session + SSH command → delegate to sub-session
- * - Main session + timeout > 5s → delegate to sub-session
- * - Main session + timeout ≤ 5s → allow
+ * PERSONAL BUILD v9: ALL exec in main session → delegate
+ * - Main session + any exec → delegate to sub-session (no timeout threshold)
  * - Subagent sessions → no restrictions
  */
 function checkMainSessionPolicy(params: {
@@ -203,26 +185,15 @@ function checkMainSessionPolicy(params: {
   background?: boolean;
   yieldMs?: number;
 }): MainSessionPolicyResult {
-  const { command, sessionKey, timeout } = params;
+  const { sessionKey } = params;
 
   // Subagent sessions have no restrictions
   if (!isMainAgentSession(sessionKey)) {
     return { action: "allow" };
   }
 
-  // Main session: delegate SSH commands (inherently long-running)
-  if (isSshCommand(command)) {
-    return { action: "delegate", reason: "SSH command" };
-  }
-
-  // Main session: delegate if timeout > 5s (default timeout is 10s if not specified)
-  const effectiveTimeout = timeout ?? 10; // default 10s
-  if (effectiveTimeout > 5) {
-    return { action: "delegate", reason: `timeout ${effectiveTimeout}s > 5s` };
-  }
-
-  // Main session with timeout ≤ 5s: allowed
-  return { action: "allow" };
+  // Main session: delegate ALL exec commands
+  return { action: "delegate", reason: "main session exec disabled" };
 }
 
 export function createExecTool(
