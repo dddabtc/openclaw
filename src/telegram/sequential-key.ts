@@ -1,4 +1,5 @@
 import { type Message, type UserFromGetMe } from "@grammyjs/types";
+import { isControlCommandMessage } from "../auto-reply/command-detection.js";
 import { isAbortRequestText } from "../auto-reply/reply/abort.js";
 import { resolveTelegramForumThreadId } from "./bot/helpers.js";
 
@@ -35,7 +36,13 @@ export function getTelegramSequentialKey(ctx: TelegramSequentialKeyContext): str
   const chatId = msg?.chat?.id ?? ctx.chat?.id;
   const rawText = msg?.text ?? msg?.caption;
   const botUsername = ctx.me?.username;
-  if (isAbortRequestText(rawText, botUsername ? { botUsername } : undefined)) {
+  const normalizeOptions = botUsername ? { botUsername } : undefined;
+  // PERSONAL BUILD: All control commands (slash commands + abort triggers) bypass the queue
+  // This ensures /status, /model, /reasoning, /help etc. execute immediately
+  if (
+    isAbortRequestText(rawText, normalizeOptions) ||
+    isControlCommandMessage(rawText, undefined, normalizeOptions)
+  ) {
     if (typeof chatId === "number") {
       return `telegram:${chatId}:control`;
     }
