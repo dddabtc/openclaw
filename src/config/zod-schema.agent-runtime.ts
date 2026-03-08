@@ -394,6 +394,18 @@ const ToolExecSafeBinProfileSchema = z
   })
   .strict();
 
+// PERSONAL BUILD: Main session execution policy schema
+const MainSessionPolicySchema = z
+  .object({
+    forbidLongExec: z.boolean().optional(),
+    requireBackgroundForExec: z.boolean().optional(),
+    maxExecTimeoutSec: z.number().int().positive().optional(),
+    blockSshCommands: z.boolean().optional(),
+    maxOutputBytes: z.number().int().positive().optional(),
+  })
+  .strict()
+  .optional();
+
 const ToolExecBaseShape = {
   host: z.enum(["sandbox", "gateway", "node"]).optional(),
   security: z.enum(["deny", "allowlist", "full"]).optional(),
@@ -409,6 +421,8 @@ const ToolExecBaseShape = {
   notifyOnExit: z.boolean().optional(),
   notifyOnExitEmptySuccess: z.boolean().optional(),
   applyPatch: ToolExecApplyPatchSchema,
+  // PERSONAL BUILD: Main session execution policy
+  mainSessionPolicy: MainSessionPolicySchema,
 } as const;
 
 const AgentToolExecSchema = z

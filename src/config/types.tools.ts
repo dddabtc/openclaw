@@ -272,6 +272,22 @@ export type ExecToolConfig = {
      */
     allowModels?: string[];
   };
+  /**
+   * PERSONAL BUILD: Main session execution policy.
+   * Controls restrictions on exec commands in the main agent session.
+   */
+  mainSessionPolicy?: {
+    /** Block long-running foreground commands in main session. */
+    forbidLongExec?: boolean;
+    /** Require background=true for all exec in main session. */
+    requireBackgroundForExec?: boolean;
+    /** Maximum allowed timeout (seconds) for foreground exec in main session. */
+    maxExecTimeoutSec?: number;
+    /** Block SSH-related commands (ssh, scp, sftp, rsync over ssh). */
+    blockSshCommands?: boolean;
+    /** Maximum output bytes for main session (default: 50KB = 51200). */
+    maxOutputBytes?: number;
+  };
 };
 
 export type FsToolsConfig = {

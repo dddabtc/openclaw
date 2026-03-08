@@ -2,6 +2,23 @@ import type { ExecAsk, ExecHost, ExecSecurity } from "../infra/exec-approvals.js
 import type { SafeBinProfileFixture } from "../infra/exec-safe-bin-policy.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
 
+/**
+ * PERSONAL BUILD: Main session execution policy.
+ * Controls restrictions on exec commands in the main agent session.
+ */
+export type ExecMainSessionPolicy = {
+  /** Block long-running foreground commands in main session. */
+  forbidLongExec?: boolean;
+  /** Require background=true for all exec in main session. */
+  requireBackgroundForExec?: boolean;
+  /** Maximum allowed timeout (seconds) for foreground exec in main session. */
+  maxExecTimeoutSec?: number;
+  /** Block SSH-related commands (ssh, scp, sftp, rsync over ssh). */
+  blockSshCommands?: boolean;
+  /** Maximum output bytes for main session (default: 50KB = 51200). */
+  maxOutputBytes?: number;
+};
+
 export type ExecToolDefaults = {
   host?: ExecHost;
   security?: ExecSecurity;
@@ -27,6 +44,8 @@ export type ExecToolDefaults = {
   notifyOnExit?: boolean;
   notifyOnExitEmptySuccess?: boolean;
   cwd?: string;
+  /** PERSONAL BUILD: Main session execution policy. */
+  mainSessionPolicy?: ExecMainSessionPolicy;
 };
 
 export type ExecElevatedDefaults = {

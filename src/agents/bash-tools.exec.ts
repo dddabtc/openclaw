@@ -31,6 +31,7 @@ import {
 } from "./bash-tools.exec-runtime.js";
 import type {
   ExecElevatedDefaults,
+  ExecMainSessionPolicy,
   ExecToolDefaults,
   ExecToolDetails,
 } from "./bash-tools.exec-types.js";
@@ -48,6 +49,7 @@ import { assertSandboxPath } from "./sandbox-paths.js";
 export type { BashSandboxConfig } from "./bash-tools.shared.js";
 export type {
   ExecElevatedDefaults,
+  ExecMainSessionPolicy,
   ExecToolDefaults,
   ExecToolDetails,
 } from "./bash-tools.exec-types.js";
@@ -148,6 +150,110 @@ async function validateScriptFileForShellBleed(params: {
   }
 }
 
+// PERSONAL BUILD: Main session detection and policy enforcement
+
+/**
+ * Check if the session key indicates a main agent session (not a subagent).
+ */
+function isMainAgentSession(sessionKey?: string): boolean {
+  const parsed = parseAgentSessionKey(sessionKey);
+  if (!parsed) {
+    // Fallback: if sessionKey is exactly "main" or ends with ":main"
+    const key = (sessionKey ?? "").trim().toLowerCase();
+    return key === "main" || key.endsWith(":main");
+  }
+  // A subagent session key contains "subagent:" in the rest portion
+  return !parsed.rest.includes("subagent:");
+}
+
+/**
+ * Resolve the maximum exec timeout for main session policy.
+ */
+function resolveMainSessionMaxExecTimeoutSec(policy?: ExecMainSessionPolicy): number {
+  const raw = policy?.maxExecTimeoutSec;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+    return 120; // Default: 2 minutes for main session foreground exec
+  }
+  return Math.floor(raw);
+}
+
+/**
+ * SSH command patterns to block in main session.
+ */
+const SSH_COMMAND_PATTERNS = [
+  /^\s*ssh\b/i,
+  /^\s*scp\b/i,
+  /^\s*sftp\b/i,
+  /^\s*rsync\s+.*-e\s+['"]?ssh/i,
+  /^\s*rsync\s+.*--rsh\s*=\s*['"]?ssh/i,
+  /^\s*rsync\s+[^/]*:/i, // rsync to remote (user@host:path)
+];
+
+function isSshCommand(command: string): boolean {
+  return SSH_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
+}
+
+/**
+ * Apply main session policy checks to exec command.
+ * Throws if the command violates the policy.
+ *
+ * PERSONAL BUILD v5: Stricter exec guard
+ * - Main session + timeout > 30s → blocked (foreground OR background)
+ * - Main session + timeout <= 30s → allowed
+ * - Subagent sessions → no restrictions
+ */
+function enforceMainSessionPolicy(params: {
+  command: string;
+  sessionKey?: string;
+  policy?: ExecMainSessionPolicy;
+  timeout?: number;
+  background?: boolean;
+  yieldMs?: number;
+}): void {
+  const { command, sessionKey, policy, timeout } = params;
+
+  // Subagent sessions have no restrictions
+  if (!isMainAgentSession(sessionKey)) {
+    return;
+  }
+
+  // Default policy when none configured - enforce safety by default
+  const effectivePolicy: ExecMainSessionPolicy = policy ?? {
+    blockSshCommands: true,
+    forbidLongExec: true,
+    maxExecTimeoutSec: 30,
+    maxOutputBytes: 51200,
+  };
+
+  // Check SSH block
+  if (effectivePolicy.blockSshCommands && isSshCommand(command)) {
+    throw new Error(
+      [
+        "Main session policy blocked SSH command.",
+        "Use sessions_spawn to run this in a sub-session.",
+      ].join("\n"),
+    );
+  }
+
+  // Check timeout block - any exec with timeout > 30s is blocked in main session
+  // This applies to BOTH foreground AND background exec
+  if (effectivePolicy.forbidLongExec) {
+    const maxExecTimeoutSec = resolveMainSessionMaxExecTimeoutSec(effectivePolicy);
+    // undefined/0/negative timeout means unlimited → treat as Infinity
+    const effectiveTimeout = timeout && timeout > 0 ? timeout : Infinity;
+
+    if (effectiveTimeout > maxExecTimeoutSec) {
+      const timeoutStr = Number.isFinite(effectiveTimeout) ? `${effectiveTimeout}s` : "unlimited";
+      throw new Error(
+        [
+          `Main session policy blocked exec: timeout ${timeoutStr} exceeds ${maxExecTimeoutSec}s limit.`,
+          "Use sessions_spawn to run this in a sub-session.",
+        ].join("\n"),
+      );
+    }
+  }
+}
+
 export function createExecTool(
   defaults?: ExecToolDefaults,
   // oxlint-disable-next-line typescript/no-explicit-any
@@ -226,8 +332,30 @@ export function createExecTool(
         throw new Error("Provide a command to start.");
       }
 
-      const maxOutput = DEFAULT_MAX_OUTPUT;
-      const pendingMaxOutput = DEFAULT_PENDING_MAX_OUTPUT;
+      // PERSONAL BUILD: Enforce main session policy
+      enforceMainSessionPolicy({
+        command: params.command,
+        sessionKey: defaults?.sessionKey,
+        policy: defaults?.mainSessionPolicy,
+        timeout: params.timeout,
+        background: params.background,
+        yieldMs: params.yieldMs,
+      });
+
+      // PERSONAL BUILD: Apply output cap from main session policy
+      const policyMaxOutput = defaults?.mainSessionPolicy?.maxOutputBytes;
+      const mainSessionOutputCap =
+        isMainAgentSession(defaults?.sessionKey) &&
+        typeof policyMaxOutput === "number" &&
+        policyMaxOutput > 0
+          ? policyMaxOutput
+          : undefined;
+      const maxOutput = mainSessionOutputCap
+        ? Math.min(DEFAULT_MAX_OUTPUT, mainSessionOutputCap)
+        : DEFAULT_MAX_OUTPUT;
+      const pendingMaxOutput = mainSessionOutputCap
+        ? Math.min(DEFAULT_PENDING_MAX_OUTPUT, mainSessionOutputCap)
+        : DEFAULT_PENDING_MAX_OUTPUT;
       const warnings: string[] = [];
       let execCommandOverride: string | undefined;
       const backgroundRequested = params.background === true;
