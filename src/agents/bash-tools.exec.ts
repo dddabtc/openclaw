@@ -45,6 +45,7 @@ import {
   truncateMiddle,
 } from "./bash-tools.shared.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
+import { spawnSubagentDirect } from "./subagent-spawn.js";
 
 export type { BashSandboxConfig } from "./bash-tools.shared.js";
 export type {
@@ -167,18 +168,7 @@ function isMainAgentSession(sessionKey?: string): boolean {
 }
 
 /**
- * Resolve the maximum exec timeout for main session policy.
- */
-function resolveMainSessionMaxExecTimeoutSec(policy?: ExecMainSessionPolicy): number {
-  const raw = policy?.maxExecTimeoutSec;
-  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
-    return 120; // Default: 2 minutes for main session foreground exec
-  }
-  return Math.floor(raw);
-}
-
-/**
- * SSH command patterns to block in main session.
+ * SSH command patterns to detect in main session.
  */
 const SSH_COMMAND_PATTERNS = [
   /^\s*ssh\b/i,
@@ -193,65 +183,46 @@ function isSshCommand(command: string): boolean {
   return SSH_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
 }
 
+type MainSessionPolicyResult = { action: "allow" } | { action: "delegate"; reason: string };
+
 /**
- * Apply main session policy checks to exec command.
- * Throws if the command violates the policy.
+ * Check main session policy for exec command.
+ * Returns { action: "delegate" } if command should be run in a sub-session.
  *
- * PERSONAL BUILD v5: Stricter exec guard
- * - Main session + timeout > 30s → blocked (foreground OR background)
- * - Main session + timeout <= 30s → allowed
+ * PERSONAL BUILD v8: Transparent delegation (not blocking)
+ * - Main session + SSH command → delegate to sub-session
+ * - Main session + timeout > 5s → delegate to sub-session
+ * - Main session + timeout ≤ 5s → allow
  * - Subagent sessions → no restrictions
  */
-function enforceMainSessionPolicy(params: {
+function checkMainSessionPolicy(params: {
   command: string;
   sessionKey?: string;
   policy?: ExecMainSessionPolicy;
   timeout?: number;
   background?: boolean;
   yieldMs?: number;
-}): void {
-  const { command, sessionKey, policy, timeout } = params;
+}): MainSessionPolicyResult {
+  const { command, sessionKey, timeout } = params;
 
   // Subagent sessions have no restrictions
   if (!isMainAgentSession(sessionKey)) {
-    return;
+    return { action: "allow" };
   }
 
-  // Default policy when none configured - enforce safety by default
-  const effectivePolicy: ExecMainSessionPolicy = policy ?? {
-    blockSshCommands: true,
-    forbidLongExec: true,
-    maxExecTimeoutSec: 30,
-    maxOutputBytes: 51200,
-  };
-
-  // Check SSH block
-  if (effectivePolicy.blockSshCommands && isSshCommand(command)) {
-    throw new Error(
-      [
-        "Main session policy blocked SSH command.",
-        "Use sessions_spawn to run this in a sub-session.",
-      ].join("\n"),
-    );
+  // Main session: delegate SSH commands (inherently long-running)
+  if (isSshCommand(command)) {
+    return { action: "delegate", reason: "SSH command" };
   }
 
-  // Check timeout block - any exec with timeout > 30s is blocked in main session
-  // This applies to BOTH foreground AND background exec
-  if (effectivePolicy.forbidLongExec) {
-    const maxExecTimeoutSec = resolveMainSessionMaxExecTimeoutSec(effectivePolicy);
-    // undefined/0/negative timeout means unlimited → treat as Infinity
-    const effectiveTimeout = timeout && timeout > 0 ? timeout : Infinity;
-
-    if (effectiveTimeout > maxExecTimeoutSec) {
-      const timeoutStr = Number.isFinite(effectiveTimeout) ? `${effectiveTimeout}s` : "unlimited";
-      throw new Error(
-        [
-          `Main session policy blocked exec: timeout ${timeoutStr} exceeds ${maxExecTimeoutSec}s limit.`,
-          "Use sessions_spawn to run this in a sub-session.",
-        ].join("\n"),
-      );
-    }
+  // Main session: delegate if timeout > 5s (default timeout is 10s if not specified)
+  const effectiveTimeout = timeout ?? 10; // default 10s
+  if (effectiveTimeout > 5) {
+    return { action: "delegate", reason: `timeout ${effectiveTimeout}s > 5s` };
   }
+
+  // Main session with timeout ≤ 5s: allowed
+  return { action: "allow" };
 }
 
 export function createExecTool(
@@ -332,8 +303,8 @@ export function createExecTool(
         throw new Error("Provide a command to start.");
       }
 
-      // PERSONAL BUILD: Enforce main session policy
-      enforceMainSessionPolicy({
+      // PERSONAL BUILD v8: Check main session policy - delegate if needed
+      const policyResult = checkMainSessionPolicy({
         command: params.command,
         sessionKey: defaults?.sessionKey,
         policy: defaults?.mainSessionPolicy,
@@ -341,6 +312,54 @@ export function createExecTool(
         background: params.background,
         yieldMs: params.yieldMs,
       });
+
+      if (policyResult.action === "delegate") {
+        // Transparently delegate to sub-session
+        const spawnResult = await spawnSubagentDirect(
+          {
+            task: `Execute this command and report the result:\n\n\`\`\`bash\n${params.command}\n\`\`\``,
+            label: `exec: ${params.command.slice(0, 50)}${params.command.length > 50 ? "..." : ""}`,
+            runTimeoutSeconds: params.timeout ?? 600, // default 10 min for delegated commands
+          },
+          {
+            agentSessionKey: defaults?.sessionKey,
+            agentChannel: defaults?.messageProvider,
+            agentAccountId: defaults?.accountId,
+          },
+        );
+
+        if (spawnResult.status === "accepted") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Command delegated to sub-session (${policyResult.reason}).\nChild session: ${spawnResult.childSessionKey}\nWill auto-announce on completion.`,
+              },
+            ],
+            details: {
+              status: "running",
+              sessionId: spawnResult.childSessionKey ?? "delegated",
+              startedAt: Date.now(),
+            },
+          };
+        } else {
+          // Fallback: if spawn fails, report the error
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Failed to delegate command: ${spawnResult.error ?? "unknown error"}`,
+              },
+            ],
+            details: {
+              status: "failed",
+              exitCode: 1,
+              durationMs: 0,
+              aggregated: spawnResult.error ?? "spawn failed",
+            },
+          };
+        }
+      }
 
       // PERSONAL BUILD: Apply output cap from main session policy
       const policyMaxOutput = defaults?.mainSessionPolicy?.maxOutputBytes;
