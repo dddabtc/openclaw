@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import { resolveContextTokensForModel } from "../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
+
+// PERSONAL BUILD metadata injected at build time
+const PERSONAL_BUILD_DATE = "2026-03-08T10:30";
+const PERSONAL_BUILD_REPO = "https://github.com/dddabtc";
 import { resolveModelAuthMode } from "../agents/model-auth.js";
 import {
   buildModelAliasIndex,
@@ -657,6 +661,8 @@ export function buildStatusMessage(args: StatusArgs): string {
     : null;
   const commit = resolveCommitHash();
   const versionLine = `🦞 OpenClaw ${VERSION}${commit ? ` (${commit})` : ""}`;
+  // PERSONAL BUILD: Add build tag line
+  const personalBuildLine = `🏷 PERSONAL BUILD · ${PERSONAL_BUILD_DATE}(UTC)\n${PERSONAL_BUILD_REPO}`;
   const usagePair = formatUsagePair(inputTokens, outputTokens);
   const cacheLine = formatCacheLine(inputTokens, cacheRead, cacheWrite);
   const costLine = costLabel ? `💵 Cost: ${costLabel}` : null;
@@ -667,6 +673,7 @@ export function buildStatusMessage(args: StatusArgs): string {
 
   return [
     versionLine,
+    personalBuildLine,
     args.timeLine,
     modelLine,
     fallbackLine,

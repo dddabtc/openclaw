@@ -49,6 +49,10 @@ function sanitizeDaemonStatusForJson(status: DaemonStatus): DaemonStatus {
   };
 }
 
+// PERSONAL BUILD metadata injected at build time
+const PERSONAL_BUILD_DATE = "2026-03-08T10:30";
+const PERSONAL_BUILD_REPO = "https://github.com/dddabtc";
+
 export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean }) {
   if (opts.json) {
     const sanitized = sanitizeDaemonStatusForJson(status);
@@ -58,6 +62,11 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean })
 
   const { rich, label, accent, infoText, okText, warnText, errorText } =
     createCliStatusTextStyles();
+
+  // Print PERSONAL BUILD tag at the top
+  defaultRuntime.log(`🏷 PERSONAL BUILD · ${PERSONAL_BUILD_DATE}(UTC)`);
+  defaultRuntime.log(PERSONAL_BUILD_REPO);
+  defaultRuntime.log("");
   const spacer = () => defaultRuntime.log("");
 
   const { service, rpc, extraServices } = status;
